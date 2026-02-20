@@ -1,0 +1,6 @@
+# Gitleaks configuration
+title = "Gitleaks Config"
+
+[extend]
+# Use the default gitleaks config as base
+useDefault = true

@@ -1,0 +1,91 @@
+# Pre-commit hooks for NS Sec
+# Install: pip install pre-commit && pre-commit install
+# Update: pre-commit autoupdate
+# Run manually: pre-commit run --all-files
+
+repos:
+  # ═══════════════════════════════════════════════════
+  # SECRETS DETECTION - Prevent credential leaks
+  # ═══════════════════════════════════════════════════
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.1
+    hooks:
+      - id: gitleaks
+        name: Gitleaks - Scan for secrets
+
+  # ═══════════════════════════════════════════════════
+  # CODE FORMATTING & LINTING - Ruff (replaces black+flake8+isort+autoflake)
+  # ═══════════════════════════════════════════════════
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # ═══════════════════════════════════════════════════
+  # FILE HYGIENE - General file quality checks
+  # ═══════════════════════════════════════════════════
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      # Prevent large files from being committed
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+      # YAML validation
+      - id: check-yaml
+        exclude: ^\.github/workflows/
+
+      # TOML validation
+      - id: check-toml
+
+      # JSON validation
+      - id: check-json
+
+      # Check for merge conflicts
+      - id: check-merge-conflict
+
+      # Check for debugger imports
+      - id: debug-statements
+
+      # Detect private keys
+      - id: detect-private-key
+
+      # Fix line endings (LF for Unix)
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+      # Remove trailing whitespace
+      - id: trailing-whitespace
+        args: ['--markdown-linebreak-ext=md']
+
+      # Ensure files end with newline
+      - id: end-of-file-fixer
+
+      # Check Python syntax
+      - id: check-ast
+
+      # Check for files that would conflict on case-insensitive filesystems
+      - id: check-case-conflict
+
+      # Sort requirements.txt
+      - id: requirements-txt-fixer
+
+  # ═══════════════════════════════════════════════════
+  # PYTHON PATTERNS - Detect anti-patterns
+  # ═══════════════════════════════════════════════════
+
+  - repo: https://github.com/pre-commit/pygrep-hooks
+    rev: v1.10.0
+    hooks:
+      # Detect common Python anti-patterns
+      - id: python-check-blanket-noqa
+      - id: python-check-blanket-type-ignore
+      - id: python-use-type-annotations
+
+      # Detect hardcoded secrets patterns
+      - id: text-unicode-replacement-char

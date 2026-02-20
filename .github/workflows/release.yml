@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest
+
+  build:
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Python dependencies
+        run: |
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Build standalone binary
+        run: |
+          echo 'from nssec.cli.main import cli; cli()' > _entry.py
+          pyinstaller --onefile --name nssec \
+            --collect-all nssec \
+            --strip \
+            --noupx \
+            _entry.py
+
+      - name: Verify binary runs
+        run: ./dist/nssec --help
+
+      - name: Install nfpm
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' \
+            | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update
+          sudo apt-get install -y nfpm
+
+      - name: Build .deb package
+        run: nfpm package --packager deb --target dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nssec-${{ env.VERSION }}
+          path: |
+            dist/nssec
+            dist/*.deb
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/nssec
+            dist/*.deb
+          generate_release_notes: true
