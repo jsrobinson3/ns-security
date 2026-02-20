@@ -32,7 +32,11 @@ The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files (ru
 ```bash
 git clone https://github.com/jsrobinson3/ns-security.git
 cd ns-security
-pip3 install -e .
+sudo apt install python3-venv -y
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e .
 ```
 
 ### Tested On
