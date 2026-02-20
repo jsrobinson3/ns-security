@@ -27,7 +27,7 @@ sudo apt install ./nssec_0.1.0_amd64.deb
 
 The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files (rules, dashboards, insight templates) to `/usr/share/nssec/`.
 
-### From source
+### From source (requires Python 3.10+)
 
 ```bash
 git clone https://github.com/jsrobinson3/ns-security.git
@@ -45,31 +45,11 @@ pip install -e .
 |----|-------------------|--------|
 | Ubuntu 24.04 LTS | v44.x | Tested |
 | Ubuntu 22.04 LTS | v44.x | Tested |
-| Ubuntu 20.04 LTS | v44.x | Workaround required |
+| Ubuntu 20.04 LTS | v44.x | Binary/.deb only |
 
 Other Debian-based distributions may work but are untested. Contributions and test reports for additional platforms are welcome.
 
-### Ubuntu 20.04 Workaround
-
-Ubuntu 20.04 ships with Python 3.8, but nssec requires Python 3.10+. Install Python 3.10 from the deadsnakes PPA:
-
-```bash
-sudo apt install software-properties-common -y
-sudo add-apt-repository ppa:deadsnakes/ppa -y
-sudo apt update
-sudo apt install python3.10 python3.10-venv -y
-```
-
-Then use `python3.10` instead of `python3` when setting up:
-
-```bash
-git clone https://github.com/jsrobinson3/ns-security.git
-cd ns-security
-python3.10 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e .
-```
+> **Ubuntu 20.04 note:** U20 ships with Python 3.8 but nssec requires 3.10+. Install from source is not supported on U20 — use the standalone binary or .deb package instead.
 
 ### Requirements
 
