@@ -4,7 +4,6 @@ import click
 from rich.table import Table
 
 from nssec.cli import console
-from nssec.core.validators import validate_ip_address, validate_ip_network
 
 
 @click.group()
@@ -293,34 +292,7 @@ def waf_status():
             console.print(f"  [dim]{line}[/dim]")
 
 
-@waf.group("rules")
-def waf_rules():
-    """Manage ModSecurity rules."""
-    pass
-
-
-@waf_rules.command("list")
-def waf_rules_list():
-    """List available rule sets."""
-    console.print("[bold]Available Rule Sets[/bold]\n")
-    console.print("[yellow]Rule listing not yet implemented.[/yellow]")
-
-
-@waf_rules.command("enable")
-@click.argument("ruleset")
-def waf_rules_enable(ruleset):
-    """Enable a rule set."""
-    console.print(f"[bold]Enabling rule set: {ruleset}[/bold]")
-    console.print("[yellow]Rule management not yet implemented.[/yellow]")
-
-
-@waf.group("allowlist")
-def waf_allowlist():
-    """Manage IP allowlist."""
-    pass
-
-
-@waf_allowlist.command("show")
+@waf.command("allowlist")
 def waf_allowlist_show():
     """Show current allowlisted IPs."""
     from nssec.modules.waf import get_allowlisted_ips
@@ -333,32 +305,3 @@ def waf_allowlist_show():
     console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})\n")
     for ip in ips:
         console.print(f"  {ip}")
-
-
-def _validate_ip_or_cidr(ip):
-    """Validate an IP address or CIDR notation string."""
-    try:
-        if "/" in ip:
-            validate_ip_network(ip)
-        else:
-            validate_ip_address(ip)
-    except ValueError as e:
-        raise click.BadParameter(str(e))
-
-
-@waf_allowlist.command("add")
-@click.argument("ip")
-def waf_allowlist_add(ip):
-    """Add IP to allowlist."""
-    _validate_ip_or_cidr(ip)
-    console.print(f"[bold]Adding {ip} to allowlist...[/bold]")
-    console.print("[yellow]Allowlist management not yet implemented.[/yellow]")
-
-
-@waf_allowlist.command("remove")
-@click.argument("ip")
-def waf_allowlist_remove(ip):
-    """Remove IP from allowlist."""
-    _validate_ip_or_cidr(ip)
-    console.print(f"[bold]Removing {ip} from allowlist...[/bold]")
-    console.print("[yellow]Allowlist management not yet implemented.[/yellow]")

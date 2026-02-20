@@ -19,6 +19,14 @@ class ServerType(Enum):
     UNKNOWN = "unknown"
 
 
+class Runtime(Enum):
+    """How a component runs."""
+
+    SYSTEMD = "systemd"
+    TOMCAT = "tomcat"
+    PACKAGE_ONLY = "package_only"  # No daemon (cron jobs, CLI tools, etc.)
+
+
 @dataclass
 class ServiceInfo:
     """Information about a NetSapiens service."""
@@ -28,6 +36,8 @@ class ServiceInfo:
     package_name: str
     server_type: ServerType
     description: str
+    runtime: Runtime = Runtime.SYSTEMD
+    tomcat_webapp: str = ""  # Webapp name or war file for Tomcat components
 
 
 # NetSapiens services and their mappings
@@ -41,10 +51,12 @@ NS_SERVICES = [
     ),
     ServiceInfo(
         name="NDP",
-        service_name="netsapiens_ndp.service",  # May not have a service
+        service_name="",  # Runs on Tomcat, not as a systemd service
         package_name="netsapiens-ndp",
         server_type=ServerType.NDP,
         description="Device provisioning",
+        runtime=Runtime.TOMCAT,
+        tomcat_webapp="cfg",
     ),
     ServiceInfo(
         name="LiCf",
@@ -101,6 +113,7 @@ NS_SERVICES = [
         package_name="netsapiens-apiban",
         server_type=ServerType.CORE,  # Should be on all SIP servers
         description="SIP scanner blocking via UFW",
+        runtime=Runtime.PACKAGE_ONLY,
     ),
     ServiceInfo(
         name="Certmanager",
@@ -108,6 +121,7 @@ NS_SERVICES = [
         package_name="netsapiens-certmanager",
         server_type=ServerType.CORE,
         description="SSL certificate management",
+        runtime=Runtime.PACKAGE_ONLY,
     ),
     ServiceInfo(
         name="API",
@@ -115,6 +129,7 @@ NS_SERVICES = [
         package_name="netsapiens-api",
         server_type=ServerType.CORE,
         description="REST API",
+        runtime=Runtime.PACKAGE_ONLY,
     ),
     ServiceInfo(
         name="Portals",
@@ -122,6 +137,7 @@ NS_SERVICES = [
         package_name="netsapiens-portals",
         server_type=ServerType.CORE,
         description="Web portals",
+        runtime=Runtime.PACKAGE_ONLY,
     ),
 ]
 
@@ -198,6 +214,36 @@ def get_enabled_services() -> set[str]:
     return enabled
 
 
+def is_tomcat_webapp_deployed(webapp_name: str) -> bool:
+    """Check if a Tomcat webapp is deployed and Tomcat is running.
+
+    Checks for the webapp .war file or extracted directory across
+    common Tomcat installation paths (tomcat6 through tomcat10).
+    """
+    import os
+
+    # Check if tomcat service is active
+    output = _run_command(["systemctl", "is-active", "tomcat9"])
+    tomcat_active = output and output.strip() == "active"
+    if not tomcat_active:
+        # Try generic tomcat service name
+        output = _run_command(["systemctl", "is-active", "tomcat"])
+        tomcat_active = output and output.strip() == "active"
+
+    if not tomcat_active:
+        return False
+
+    # Check for webapp in common Tomcat webapps directories
+    for version in ["9", "10", "8", "7", "6", ""]:
+        base = f"/var/lib/tomcat{version}/webapps"
+        war_path = os.path.join(base, f"{webapp_name}.war")
+        dir_path = os.path.join(base, webapp_name)
+        if os.path.exists(war_path) or os.path.isdir(dir_path):
+            return True
+
+    return False
+
+
 def detect_installed_components() -> dict[str, dict]:
     """Detect which NetSapiens components are installed and running.
 
@@ -212,8 +258,17 @@ def detect_installed_components() -> dict[str, dict]:
 
     for svc in NS_SERVICES:
         pkg_installed = svc.package_name in packages
-        svc_active = active_services.get(svc.service_name, False)
         svc_enabled = svc.service_name in enabled_services
+
+        # Determine active status based on runtime type
+        if svc.runtime == Runtime.TOMCAT:
+            svc_active = (
+                is_tomcat_webapp_deployed(svc.tomcat_webapp) if svc.tomcat_webapp else False
+            )
+        elif svc.runtime == Runtime.PACKAGE_ONLY:
+            svc_active = False
+        else:
+            svc_active = active_services.get(svc.service_name, False)
 
         if pkg_installed or svc_active:
             components[svc.name] = {
@@ -282,6 +337,7 @@ def get_server_info() -> dict:
                 "description": info["service_info"].description,
                 "package": info["service_info"].package_name,
                 "service": info["service_info"].service_name,
+                "runtime": info["service_info"].runtime,
                 "installed": info["package_installed"],
                 "active": info["service_active"],
                 "enabled": info["service_enabled"],

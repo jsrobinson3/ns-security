@@ -217,14 +217,6 @@ def audit_run(host, checks, skip, verbose, category):
     _display_audit_summary(*groups, results)
 
 
-@audit.command("checklist")
-@click.option("--section", "-s", help="Specific section to check")
-def audit_checklist(section):
-    """Interactive security checklist based on NetSapiens best practices."""
-    console.print("[bold]NetSapiens Security Checklist[/bold]\n")
-    console.print("[yellow]Checklist engine not yet implemented.[/yellow]")
-
-
 # ─── REPORT GENERATION ───
 
 
@@ -238,27 +230,24 @@ def _collect_check_results(server_type):
     for check in applicable:
         try:
             result = check.run()
-            results.append(
-                {
-                    "check_id": result.check_id,
-                    "name": result.name,
-                    "status": result.status.value,
-                    "severity": result.severity.value,
-                    "message": result.message,
-                    "details": result.details,
-                    "remediation": result.remediation,
-                }
-            )
+            entry = {
+                "check_id": result.check_id,
+                "name": result.name,
+                "status": result.status.value,
+                "severity": result.severity.value,
+                "message": result.message,
+                "details": result.details,
+                "remediation": result.remediation,
+            }
         except Exception as e:
-            results.append(
-                {
-                    "check_id": check.check_id,
-                    "name": check.name,
-                    "status": "error",
-                    "severity": check.severity.value,
-                    "message": str(e),
-                }
-            )
+            entry = {
+                "check_id": check.check_id,
+                "name": check.name,
+                "status": "error",
+                "severity": check.severity.value,
+                "message": str(e),
+            }
+        results.append(entry)
 
     return results
 

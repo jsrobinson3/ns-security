@@ -137,6 +137,12 @@ def save_config(config: dict[str, Any], config_path: Path) -> None:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
+def create_default_config(config_path: Path, server_type: ServerType) -> None:
+    """Generate and save a default configuration file."""
+    config = _generate_default_config(server_type)
+    save_config(config, config_path)
+
+
 def _generate_default_config(server_type: ServerType) -> dict[str, Any]:
     """Generate default configuration based on server type."""
     st = server_type.value if server_type != ServerType.UNKNOWN else "auto"

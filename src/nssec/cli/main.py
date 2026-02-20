@@ -6,6 +6,7 @@ from rich.table import Table
 from nssec import __version__
 from nssec.cli import ALLOWED_CONFIG_DIRS, console, validate_path
 from nssec.core.server_types import (
+    Runtime,
     ServerType,
     detect_server_type,
     get_applicable_security_modules,
@@ -33,6 +34,16 @@ def server():
     pass
 
 
+def _component_status(comp: dict) -> str:
+    """Return rich-formatted service status string for a component."""
+    runtime = comp.get("runtime", Runtime.SYSTEMD)
+    if runtime == Runtime.TOMCAT:
+        return "[green]Tomcat[/green]" if comp["active"] else "[yellow]Tomcat (Down)[/yellow]"
+    if runtime == Runtime.PACKAGE_ONLY or not comp["service"]:
+        return "[dim]N/A[/dim]"
+    return "[green]Active[/green]" if comp["active"] else "[yellow]Inactive[/yellow]"
+
+
 def _print_detection_results(info):
     """Print component and active-service tables."""
     if info["components"]:
@@ -43,12 +54,7 @@ def _print_detection_results(info):
         comp_table.add_column("Service", style="green")
 
         for name, comp in info["components"].items():
-            if not comp["service"]:
-                status = "[dim]N/A[/dim]"
-            elif comp["active"]:
-                status = "[green]Active[/green]"
-            else:
-                status = "[yellow]Inactive[/yellow]"
+            status = _component_status(comp)
             comp_table.add_row(name, comp["description"], comp["package"], status)
 
         console.print(comp_table)
@@ -85,12 +91,7 @@ def server_detect(host):
 
     info = get_server_info()
 
-    table = Table(title="NetSapiens Server Detection")
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("Server Type", info["server_type"].upper())
-    table.add_row("Is Combo", "Yes" if info["is_combo"] else "No")
-    console.print(table)
+    console.print(f"\n[bold cyan]Server Type:[/bold cyan] {info['server_type'].upper()}")
 
     _print_detection_results(info)
 
@@ -153,40 +154,6 @@ def init(config_dir):
         )
     except Exception as e:
         console.print(f"\n[red]Error:[/red] {e}")
-
-
-# ─── CERTIFICATE COMMANDS ───
-
-
-@cli.group()
-def certs():
-    """Certificate management commands."""
-    pass
-
-
-@certs.command("status")
-def certs_status():
-    """Show certificate status."""
-    console.print("[bold]Certificate Status[/bold]\n")
-    console.print("[yellow]Certificate status check not yet implemented.[/yellow]")
-
-
-@certs.command("sync")
-def certs_sync():
-    """Synchronize certificates across domains."""
-    console.print("[bold]Synchronizing certificates...[/bold]")
-    console.print("[yellow]Certificate sync not yet implemented.[/yellow]")
-
-
-@certs.command("rekey")
-@click.option("--domain", "-d", help="Specific domain to rekey")
-def certs_rekey(domain):
-    """Regenerate certificate keys."""
-    if domain:
-        console.print(f"[bold]Regenerating keys for {domain}...[/bold]")
-    else:
-        console.print("[bold]Regenerating all certificate keys...[/bold]")
-    console.print("[yellow]Certificate rekeying not yet implemented.[/yellow]")
 
 
 # ─── REGISTER SUB-COMMAND GROUPS ───
