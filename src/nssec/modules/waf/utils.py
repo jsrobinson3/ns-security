@@ -3,46 +3,40 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from jinja2 import Template
 
+from nssec.core import ssh
 from nssec.modules.waf.config import BACKUP_SUFFIX, SECURITY2_CONF
 
 
 def run_cmd(cmd: list[str], timeout: int = 120) -> tuple[str, str, int]:
-    """Run a command and return (stdout, stderr, returncode)."""
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return result.stdout, result.stderr, result.returncode
-    except subprocess.TimeoutExpired:
-        return "", f"Command timed out after {timeout}s", -1
-    except FileNotFoundError:
-        return "", f"Command not found: {cmd[0]}", -1
+    """Run a command and return (stdout, stderr, returncode).
+
+    Uses SSH-aware execution - works locally or remotely.
+    """
+    return ssh.run_command(cmd, timeout)
 
 
 def package_installed(package: str) -> bool:
-    """Check if a deb package is installed."""
+    """Check if a deb package is installed.
+
+    Uses SSH-aware execution - works locally or remotely.
+    """
     _, _, rc = run_cmd(["dpkg", "-s", package])
     return rc == 0
 
 
 def file_exists(path: str) -> bool:
-    return Path(path).exists()
+    """Check if a file exists. SSH-aware."""
+    return ssh.file_exists(path)
 
 
 def read_file(path: str) -> str | None:
-    try:
-        return Path(path).read_text()
-    except (OSError, PermissionError):
-        return None
+    """Read a file. SSH-aware."""
+    return ssh.read_file(path)
 
 
 def backup_file(path: str) -> str | None:

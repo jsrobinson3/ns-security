@@ -1,5 +1,7 @@
 """Data types for the WAF module."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Optional
 

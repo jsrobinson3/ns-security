@@ -17,12 +17,19 @@ Usage:
     session_cache.clear()
 """
 
+from __future__ import annotations
+
 import threading
 import time
 from pathlib import Path
 from typing import Optional, Union
 
 from nssec.core import ssh
+
+
+def _remove_suffix(text: str, suffix: str) -> str:
+    """Remove suffix from string (Python 3.8 compatible)."""
+    return text[:-len(suffix)] if suffix and text.endswith(suffix) else text
 
 
 def _run_subprocess(cmd: list[str], timeout: int = 30) -> tuple[str, int]:
@@ -70,7 +77,7 @@ def _parse_service_line(line: str) -> tuple[Optional[str], Optional[str]]:
     if not parts:
         return None, None
     service_unit = parts[0]
-    service_name = service_unit.removesuffix(".service")
+    service_name = _remove_suffix(service_unit, ".service")
     return service_name, service_unit
 
 
@@ -273,7 +280,7 @@ class SessionCache:
             if self._active_services is None or self._is_expired(self._services_time):
                 self._load_services_cache()
 
-            normalized = service_name.removesuffix(".service")
+            normalized = _remove_suffix(service_name, ".service")
             return (
                 normalized in self._active_services
                 or f"{normalized}.service" in self._active_services

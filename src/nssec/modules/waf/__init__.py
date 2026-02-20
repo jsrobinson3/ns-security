@@ -6,10 +6,11 @@ with OWASP CRS v4 on Apache2 for NetSapiens servers.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 from pathlib import Path
+
+from nssec.core.ssh import is_directory, is_root
 
 from nssec.modules.waf.config import (
     BACKUP_SUFFIX,
@@ -80,9 +81,9 @@ class ModSecurityInstaller:
         """Run all preflight checks and return results."""
         pf = PreflightResult()
 
-        pf.is_root = os.geteuid() == 0
+        pf.is_root = is_root()
         if not pf.is_root:
-            pf.errors.append("Must run as root (sudo nssec waf init)")
+            pf.errors.append("Must run as root (use --sudo flag or run with sudo)")
 
         pf.apache_installed = package_installed("apache2")
         if not pf.apache_installed:
@@ -107,14 +108,15 @@ class ModSecurityInstaller:
         return pf
 
     def _detect_crs(self) -> tuple[bool, str | None, str | None]:
-        """Detect CRS installation and version."""
+        """Detect CRS installation and version. SSH-aware."""
         for search_path in CRS_SEARCH_PATHS:
-            if not Path(search_path).is_dir():
+            if not is_directory(search_path):
                 continue
-            version_file = Path(search_path) / "VERSION"
-            if version_file.exists():
-                return True, version_file.read_text().strip(), search_path
-            if (Path(search_path) / "rules").is_dir():
+            version_file = f"{search_path}/VERSION"
+            version_content = read_file(version_file)
+            if version_content:
+                return True, version_content.strip(), search_path
+            if is_directory(f"{search_path}/rules"):
                 return True, None, search_path
 
         if package_installed(CRS_APT_PACKAGE):
