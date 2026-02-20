@@ -19,9 +19,6 @@ contents:
   - src: rules/
     dst: /usr/share/nssec/rules/
 
-  - src: dashboards/
-    dst: /usr/share/nssec/dashboards/
-
   - src: insight/
     dst: /usr/share/nssec/insight/
 
