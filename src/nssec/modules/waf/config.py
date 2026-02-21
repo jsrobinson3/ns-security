@@ -194,14 +194,26 @@ SecRule REQUEST_URI "@beginsWith /NqsProxy/" \\
      ctl:ruleRemoveById=920420"
 
 # ---- Phone provisioning config files (.cfg, .xml) ----
-# Phones constantly fetch config files from /cfg/ - this is expected NDP behavior.
-# Rule 920440 blocks .cfg extension by policy; exclude the entire /cfg/ path.
+# Phones fetch config files from /cfg/ - this is expected NDP behavior.
+# 920440: blocks .cfg extension by policy
+# 951xxx: SQL leakage response rules hit PCRE limits on directory contact data
+# Disable response body scanning for /cfg/ to avoid PCRE overhead on config responses.
 SecRule REQUEST_URI "@beginsWith /cfg/" \\
     "id:1000004,\\
      phase:1,\\
      pass,\\
      nolog,\\
-     ctl:ruleRemoveById=920440"
+     ctl:ruleRemoveById=920440,\\
+     ctl:responseBodyAccess=Off"
+
+# ---- Firmware downloads ----
+# Phones fetch firmware from /frm/ - binary files must not be scanned.
+SecRule REQUEST_URI "@beginsWith /frm/" \\
+    "id:1000007,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:responseBodyAccess=Off"
 
 # ---- iNSight health checks ----
 SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
