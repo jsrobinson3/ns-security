@@ -56,7 +56,9 @@ def _read_file(path: str) -> Optional[str]:
 def _tail_file(path: str, lines: int = 10) -> list[str]:
     """Return the last N lines of a file."""
     try:
-        all_lines = Path(path).read_text().splitlines()
+        # Audit log may contain binary request bodies; use replace to handle them
+        content = Path(path).read_text(errors="replace")
+        all_lines = content.splitlines()
         return all_lines[-lines:]
     except (OSError, PermissionError):
         return []
