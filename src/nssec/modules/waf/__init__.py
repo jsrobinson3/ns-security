@@ -56,7 +56,12 @@ def get_allowlisted_ips() -> list[str]:
     content = read_file(NS_EXCLUSIONS_CONF)
     if not content:
         return []
-    return re.findall(r'id:10001\d+.*?@ipMatch\s+([^\s"]+)', content, re.DOTALL)
+    # Match SecRule with @ipMatch followed by id:10001xx (admin IP rules)
+    return re.findall(
+        r'SecRule REMOTE_ADDR "@ipMatch\s+([^\s"]+)"[^"]*"id:10001\d+',
+        content,
+        re.DOTALL,
+    )
 
 
 def add_allowlisted_ip(ip: str) -> StepResult:
