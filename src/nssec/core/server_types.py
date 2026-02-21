@@ -1,5 +1,7 @@
 """NetSapiens server type detection via systemd services and packages."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional

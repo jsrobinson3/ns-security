@@ -135,6 +135,8 @@ These community projects provide additional NetSapiens security capabilities:
 
 - **[rekeyandsync](https://github.com/kselkowitz/rekeyandsync)** — Rekey and resync SIP device credentials
 
+- **[ua-monitor](https://github.com/traviscw/ua-monitor)** — SIP Registration Monitor for VoIPMonitor
+
 ## Roadmap
 
 - [x] ModSecurity installation and configuration with OWASP CRS

@@ -6,10 +6,11 @@ with OWASP CRS v4 on Apache2 for NetSapiens servers.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 from pathlib import Path
+
+from nssec.core.ssh import is_directory, is_root
 
 from nssec.modules.waf.config import (
     BACKUP_SUFFIX,
@@ -58,6 +59,42 @@ def get_allowlisted_ips() -> list[str]:
     return re.findall(r'id:10001\d+.*?@ipMatch\s+([^\s"]+)', content, re.DOTALL)
 
 
+def add_allowlisted_ip(ip: str) -> StepResult:
+    """Add an IP address to the allowlist and regenerate exclusions config."""
+    current_ips = get_allowlisted_ips()
+    if ip in current_ips:
+        return StepResult(skipped=True, message=f"{ip} already allowlisted")
+
+    new_ips = current_ips + [ip]
+
+    if file_exists(NS_EXCLUSIONS_CONF):
+        backup_file(NS_EXCLUSIONS_CONF)
+
+    content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=new_ips)
+    if not write_file(NS_EXCLUSIONS_CONF, content):
+        return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
+
+    return StepResult(message=f"Added {ip} to allowlist")
+
+
+def remove_allowlisted_ip(ip: str) -> StepResult:
+    """Remove an IP address from the allowlist and regenerate exclusions config."""
+    current_ips = get_allowlisted_ips()
+    if ip not in current_ips:
+        return StepResult(skipped=True, message=f"{ip} not in allowlist")
+
+    new_ips = [existing for existing in current_ips if existing != ip]
+
+    if file_exists(NS_EXCLUSIONS_CONF):
+        backup_file(NS_EXCLUSIONS_CONF)
+
+    content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=new_ips)
+    if not write_file(NS_EXCLUSIONS_CONF, content):
+        return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
+
+    return StepResult(message=f"Removed {ip} from allowlist")
+
+
 class ModSecurityInstaller:
     """Idempotent ModSecurity v2 + OWASP CRS v4 installer for Apache2."""
 
@@ -80,9 +117,9 @@ class ModSecurityInstaller:
         """Run all preflight checks and return results."""
         pf = PreflightResult()
 
-        pf.is_root = os.geteuid() == 0
+        pf.is_root = is_root()
         if not pf.is_root:
-            pf.errors.append("Must run as root (sudo nssec waf init)")
+            pf.errors.append("Must run as root (use --sudo flag or run with sudo)")
 
         pf.apache_installed = package_installed("apache2")
         if not pf.apache_installed:
@@ -107,14 +144,15 @@ class ModSecurityInstaller:
         return pf
 
     def _detect_crs(self) -> tuple[bool, str | None, str | None]:
-        """Detect CRS installation and version."""
+        """Detect CRS installation and version. SSH-aware."""
         for search_path in CRS_SEARCH_PATHS:
-            if not Path(search_path).is_dir():
+            if not is_directory(search_path):
                 continue
-            version_file = Path(search_path) / "VERSION"
-            if version_file.exists():
-                return True, version_file.read_text().strip(), search_path
-            if (Path(search_path) / "rules").is_dir():
+            version_file = f"{search_path}/VERSION"
+            version_content = read_file(version_file)
+            if version_content:
+                return True, version_content.strip(), search_path
+            if is_directory(f"{search_path}/rules"):
                 return True, None, search_path
 
         if package_installed(CRS_APT_PACKAGE):

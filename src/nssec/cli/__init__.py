@@ -3,6 +3,8 @@
 Shared utilities used by CLI sub-modules (audit, waf_commands, etc.).
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Optional
 

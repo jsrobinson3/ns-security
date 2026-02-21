@@ -4,6 +4,8 @@ All checks are designed to be read-only and should not require sudo privileges.
 Where possible, checks read config files directly rather than running commands.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from nssec.core.cache import cached_ufw_rules

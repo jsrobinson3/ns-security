@@ -14,15 +14,66 @@ from nssec.core.server_types import (
 )
 
 
+def _setup_remote_host(host: str, use_sudo: bool = False) -> None:
+    """Set up SSH connection to a remote host."""
+    from nssec.core.cache import session_cache
+    from nssec.core.ssh import SSHExecutor, set_remote_host, set_use_sudo
+
+    console.print(f"[bold]Connecting to {host}...[/bold]")
+    executor = SSHExecutor(host)
+    success, message = executor.test_connection()
+    if not success:
+        console.print(f"[red]SSH connection failed: {message}[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]{message}[/green]")
+    set_remote_host(host)
+    set_use_sudo(use_sudo)
+    if use_sudo:
+        console.print("[dim]Sudo enabled - you may be prompted for password[/dim]")
+    console.print()
+    session_cache.clear()
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="nssec")
+@click.option(
+    "--host",
+    "-H",
+    envvar="NSSEC_HOST",
+    help="Remote host to connect via SSH (e.g., user@hostname). Can also set NSSEC_HOST env var.",
+)
+@click.option(
+    "--sudo",
+    "-S",
+    is_flag=True,
+    envvar="NSSEC_SUDO",
+    help="Run commands with sudo (for privileged operations like waf init).",
+)
 @click.pass_context
-def cli(ctx):
+def cli(ctx, host, sudo):
     """NS-Security: Open-source NetSapiens security platform.
 
     Audit tools and hardening automation for NetSapiens clusters.
+
+    Use --host to run commands on a remote NetSapiens server via SSH:
+
+        nssec --host ubuntu@myserver.example.com audit run
+
+    Use --sudo for commands that require root privileges:
+
+        nssec --host ubuntu@myserver.example.com --sudo waf init
     """
     ctx.ensure_object(dict)
+    ctx.obj["host"] = host
+    ctx.obj["sudo"] = sudo
+
+    # Set up sudo for local execution if no host specified
+    if sudo and not host:
+        from nssec.core.ssh import set_use_sudo
+        set_use_sudo(True)
+
+    if host:
+        _setup_remote_host(host, use_sudo=sudo)
 
 
 # ─── SERVER COMMANDS ───
@@ -68,27 +119,8 @@ def _print_detection_results(info):
 
 
 @server.command("detect")
-@click.option(
-    "--host",
-    "-H",
-    help="Remote host to detect via SSH (e.g., user@hostname)",
-)
-def server_detect(host):
+def server_detect():
     """Detect the NetSapiens server type."""
-    from nssec.core.cache import session_cache
-    from nssec.core.ssh import SSHExecutor, set_remote_host
-
-    if host:
-        console.print(f"[bold]Connecting to {host}...[/bold]")
-        executor = SSHExecutor(host)
-        success, message = executor.test_connection()
-        if not success:
-            console.print(f"[red]SSH connection failed: {message}[/red]")
-            raise SystemExit(1)
-        console.print(f"[green]{message}[/green]\n")
-        set_remote_host(host)
-        session_cache.clear()
-
     info = get_server_info()
 
     console.print(f"\n[bold cyan]Server Type:[/bold cyan] {info['server_type'].upper()}")

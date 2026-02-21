@@ -9,16 +9,25 @@ Usage:
     # Set the remote host for all subsequent operations
     set_remote_host("ubuntu@development-core")
 
-    # Now all checks will run via SSH
+    # Enable sudo for privileged commands
+    set_use_sudo(True)
+
+    # Now all checks will run via SSH (with sudo)
     nssec audit run
 """
 
+from __future__ import annotations
+
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 # Global remote host - when set, all commands execute via SSH
 _remote_host: Optional[str] = None
+
+# Global sudo flag - when set, commands are prefixed with sudo
+_use_sudo: bool = False
 
 
 def set_remote_host(host: Optional[str]) -> None:
@@ -37,23 +46,66 @@ def get_remote_host() -> Optional[str]:
     return _remote_host
 
 
+def set_use_sudo(use_sudo: bool) -> None:
+    """Enable or disable sudo for command execution.
+
+    Args:
+        use_sudo: If True, commands will be prefixed with sudo.
+    """
+    global _use_sudo
+    _use_sudo = use_sudo
+
+
+def get_use_sudo() -> bool:
+    """Check if sudo is enabled for command execution."""
+    return _use_sudo
+
+
 def is_remote() -> bool:
     """Check if we're configured to run remotely."""
     return _remote_host is not None
 
 
+def is_root() -> bool:
+    """Check if we're running as root (locally or remotely).
+
+    For remote execution, checks the effective user on the remote host.
+    For local execution, checks the local effective user ID.
+
+    Returns:
+        True if running as root (or sudo is enabled), False otherwise.
+    """
+    if _use_sudo:
+        return True
+
+    if is_remote():
+        # Check remote effective user ID
+        stdout, _, rc = run_command(["id", "-u"])
+        if rc == 0:
+            try:
+                return int(stdout.strip()) == 0
+            except ValueError:
+                pass
+        return False
+
+    # Local check
+    return os.geteuid() == 0
+
+
 class SSHExecutor:
     """Execute commands and read files over SSH."""
 
-    def __init__(self, host: str, timeout: int = 30):
+    def __init__(self, host: str, timeout: int = 30, use_sudo: bool = False):
         """Initialize SSH executor.
 
         Args:
             host: SSH host string (e.g., "user@hostname").
             timeout: Default timeout for SSH commands in seconds.
+            use_sudo: If True, prefix commands with sudo.
         """
         self.host = host
         self.timeout = timeout
+        self.use_sudo = use_sudo
         # SSH options for non-interactive, reliable execution
         self.ssh_opts = [
             "-o",
@@ -68,12 +120,14 @@ class SSHExecutor:
         self,
         cmd: list[str],
         timeout: Optional[int] = None,
+        use_sudo: Optional[bool] = None,
     ) -> tuple[str, str, int]:
         """Run a command on the remote host via SSH.
 
         Args:
             cmd: Command and arguments to run.
             timeout: Timeout in seconds (uses default if not specified).
+            use_sudo: Override sudo setting for this command. If None, uses instance default.
 
         Returns:
             Tuple of (stdout, stderr, return_code).
@@ -81,10 +135,21 @@ class SSHExecutor:
         if timeout is None:
             timeout = self.timeout
 
+        # Determine if we should use sudo
+        sudo = use_sudo if use_sudo is not None else self.use_sudo
+
         # Build SSH command
         # Quote the remote command properly
-        remote_cmd = " ".join(_shell_quote(arg) for arg in cmd)
-        ssh_cmd = ["ssh"] + self.ssh_opts + [self.host, remote_cmd]
+        if sudo:
+            remote_cmd = "sudo " + " ".join(_shell_quote(arg) for arg in cmd)
+        else:
+            remote_cmd = " ".join(_shell_quote(arg) for arg in cmd)
+
+        # Use -t to allocate TTY when sudo is needed (allows password prompt)
+        ssh_opts = self.ssh_opts.copy()
+        if sudo:
+            ssh_opts = ["-t"] + ssh_opts
+        ssh_cmd = ["ssh"] + ssh_opts + [self.host, remote_cmd]
 
         try:
             result = subprocess.run(
@@ -173,9 +238,11 @@ _executor: Optional[SSHExecutor] = None
 def get_executor() -> Optional[SSHExecutor]:
     """Get the global SSH executor, or None if running locally."""
     global _executor
-    if _remote_host and _executor is None:
-        _executor = SSHExecutor(_remote_host)
-    elif not _remote_host:
+    if _remote_host:
+        # Recreate executor if sudo setting changed
+        if _executor is None or _executor.use_sudo != _use_sudo:
+            _executor = SSHExecutor(_remote_host, use_sudo=_use_sudo)
+    else:
         _executor = None
     return _executor
 
@@ -185,6 +252,7 @@ def run_command(cmd: list[str], timeout: int = 30) -> tuple[str, str, int]:
 
     This is a drop-in replacement for subprocess-based command execution
     that transparently handles SSH when a remote host is configured.
+    Respects the global sudo setting for both local and remote execution.
 
     Args:
         cmd: Command and arguments to run.
@@ -198,9 +266,10 @@ def run_command(cmd: list[str], timeout: int = 30) -> tuple[str, str, int]:
         return executor.run_command(cmd, timeout)
 
     # Local execution
+    actual_cmd = ["sudo"] + cmd if _use_sudo else cmd
     try:
         result = subprocess.run(
-            cmd,
+            actual_cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -209,7 +278,7 @@ def run_command(cmd: list[str], timeout: int = 30) -> tuple[str, str, int]:
     except subprocess.TimeoutExpired:
         return "", f"Command timed out after {timeout}s", -1
     except FileNotFoundError:
-        return "", f"Command not found: {cmd[0]}", -1
+        return "", f"Command not found: {actual_cmd[0]}", -1
     except Exception as e:
         return "", str(e), -1
 

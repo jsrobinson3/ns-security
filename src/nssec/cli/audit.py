@@ -132,22 +132,6 @@ def _display_audit_summary(failed, warnings, passed, skipped, results):
         )
 
 
-def _connect_remote_host(host):
-    """Set up SSH connection to a remote host for auditing."""
-    from nssec.core.cache import session_cache
-    from nssec.core.ssh import SSHExecutor, set_remote_host
-
-    console.print(f"[bold]Connecting to {host}...[/bold]")
-    executor = SSHExecutor(host)
-    success, message = executor.test_connection()
-    if not success:
-        console.print(f"[red]SSH connection failed: {message}[/red]")
-        raise SystemExit(1)
-    console.print(f"[green]{message}[/green]\n")
-    set_remote_host(host)
-    session_cache.clear()
-
-
 def _filter_checks(applicable, category, checks, skip):
     """Apply category, include, and exclude filters to check list."""
     if category:
@@ -161,11 +145,6 @@ def _filter_checks(applicable, category, checks, skip):
 
 
 @audit.command("run")
-@click.option(
-    "--host",
-    "-H",
-    help="Remote host to audit via SSH (e.g., user@hostname)",
-)
 @click.option(
     "--checks",
     "-c",
@@ -184,16 +163,9 @@ def _filter_checks(applicable, category, checks, skip):
     type=click.Choice(["apiban", "firewall", "ssh", "mysql", "netsapiens"]),
     help="Run only checks in category",
 )
-def audit_run(host, checks, skip, verbose, category):
-    """Run a full security audit.
-
-    Use --host to audit a remote server via SSH:
-        nssec audit run --host ubuntu@myserver.example.com
-    """
+def audit_run(checks, skip, verbose, category):
+    """Run a full security audit."""
     from nssec.core.checks import get_checks_for_server_type
-
-    if host:
-        _connect_remote_host(host)
 
     server_type = detect_server_type()
     console.print(f"[bold]Security Audit - {server_type.value.upper()} Server[/bold]\n")
