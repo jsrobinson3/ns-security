@@ -59,6 +59,42 @@ def get_allowlisted_ips() -> list[str]:
     return re.findall(r'id:10001\d+.*?@ipMatch\s+([^\s"]+)', content, re.DOTALL)
 
 
+def add_allowlisted_ip(ip: str) -> StepResult:
+    """Add an IP address to the allowlist and regenerate exclusions config."""
+    current_ips = get_allowlisted_ips()
+    if ip in current_ips:
+        return StepResult(skipped=True, message=f"{ip} already allowlisted")
+
+    new_ips = current_ips + [ip]
+
+    if file_exists(NS_EXCLUSIONS_CONF):
+        backup_file(NS_EXCLUSIONS_CONF)
+
+    content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=new_ips)
+    if not write_file(NS_EXCLUSIONS_CONF, content):
+        return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
+
+    return StepResult(message=f"Added {ip} to allowlist")
+
+
+def remove_allowlisted_ip(ip: str) -> StepResult:
+    """Remove an IP address from the allowlist and regenerate exclusions config."""
+    current_ips = get_allowlisted_ips()
+    if ip not in current_ips:
+        return StepResult(skipped=True, message=f"{ip} not in allowlist")
+
+    new_ips = [existing for existing in current_ips if existing != ip]
+
+    if file_exists(NS_EXCLUSIONS_CONF):
+        backup_file(NS_EXCLUSIONS_CONF)
+
+    content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=new_ips)
+    if not write_file(NS_EXCLUSIONS_CONF, content):
+        return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
+
+    return StepResult(message=f"Removed {ip} from allowlist")
+
+
 class ModSecurityInstaller:
     """Idempotent ModSecurity v2 + OWASP CRS v4 installer for Apache2."""
 

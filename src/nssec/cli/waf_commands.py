@@ -292,7 +292,25 @@ def waf_status():
             console.print(f"  [dim]{line}[/dim]")
 
 
-@waf.command("allowlist")
+@waf.group("allowlist", invoke_without_command=True)
+@click.pass_context
+def waf_allowlist(ctx):
+    """Manage allowlisted IPs for reduced WAF strictness."""
+    if ctx.invoked_subcommand is None:
+        # Default behavior: show allowlist
+        from nssec.modules.waf import get_allowlisted_ips
+
+        ips = get_allowlisted_ips()
+        if not ips:
+            console.print("[dim]No IPs currently allowlisted.[/dim]")
+            return
+
+        console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})\n")
+        for ip in ips:
+            console.print(f"  {ip}")
+
+
+@waf_allowlist.command("show")
 def waf_allowlist_show():
     """Show current allowlisted IPs."""
     from nssec.modules.waf import get_allowlisted_ips
@@ -305,3 +323,80 @@ def waf_allowlist_show():
     console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})\n")
     for ip in ips:
         console.print(f"  {ip}")
+
+
+@waf_allowlist.command("add")
+@click.argument("ip")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def waf_allowlist_add(ip, yes):
+    """Add an IP address to the WAF allowlist.
+
+    IP can be a single address (192.168.1.1) or CIDR notation (10.0.0.0/8).
+    Allowlisted IPs bypass OWASP CRS rules for reduced false positives.
+    """
+    from nssec.modules.waf import ModSecurityInstaller, get_allowlisted_ips, add_allowlisted_ip
+
+    installer = ModSecurityInstaller()
+    pf = installer.preflight()
+    _require_root_and_modsec(pf, "sudo nssec waf allowlist add")
+
+    current_ips = get_allowlisted_ips()
+    if ip in current_ips:
+        console.print(f"[yellow]IP {ip} is already allowlisted.[/yellow]")
+        return
+
+    console.print(f"Adding [cyan]{ip}[/cyan] to WAF allowlist...")
+
+    result = add_allowlisted_ip(ip)
+    if not result.success:
+        console.print(f"  [red]Error:[/red] {result.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {result.message}")
+
+    val = installer.validate_config()
+    if not val.success:
+        console.print(f"  [red]Error:[/red] {val.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {val.message}")
+
+    _prompt_and_reload_apache(installer, yes)
+
+
+@waf_allowlist.command("delete")
+@click.argument("ip")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def waf_allowlist_delete(ip, yes):
+    """Remove an IP address from the WAF allowlist.
+
+    IP must match exactly as it was added (including CIDR notation if used).
+    """
+    from nssec.modules.waf import ModSecurityInstaller, get_allowlisted_ips, remove_allowlisted_ip
+
+    installer = ModSecurityInstaller()
+    pf = installer.preflight()
+    _require_root_and_modsec(pf, "sudo nssec waf allowlist delete")
+
+    current_ips = get_allowlisted_ips()
+    if ip not in current_ips:
+        console.print(f"[yellow]IP {ip} is not in the allowlist.[/yellow]")
+        if current_ips:
+            console.print("\nCurrent allowlisted IPs:")
+            for existing_ip in current_ips:
+                console.print(f"  {existing_ip}")
+        return
+
+    console.print(f"Removing [cyan]{ip}[/cyan] from WAF allowlist...")
+
+    result = remove_allowlisted_ip(ip)
+    if not result.success:
+        console.print(f"  [red]Error:[/red] {result.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {result.message}")
+
+    val = installer.validate_config()
+    if not val.success:
+        console.print(f"  [red]Error:[/red] {val.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {val.message}")
+
+    _prompt_and_reload_apache(installer, yes)
