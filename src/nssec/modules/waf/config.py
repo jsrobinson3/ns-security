@@ -169,6 +169,11 @@ NS_EXCLUSIONS_TEMPLATE = """\
 SecRuleUpdateTargetById 942100 "!REQUEST_COOKIES"
 SecRuleUpdateTargetById 942200 "!REQUEST_COOKIES"
 
+# ---- Third-party tracking cookies trigger RCE false positives ----
+# Reddit (_rdt_*), Google (_ga, _gid), Facebook (_fbp) etc. use delimiters
+# that match shell patterns like ~N (directory stack) or command separators.
+SecRuleUpdateTargetById 932270 "!REQUEST_COOKIES"
+
 # ---- NS API endpoints use base64 in query strings ----
 SecRule REQUEST_URI "@beginsWith /ns-api/" \\
     "id:1000001,\\
