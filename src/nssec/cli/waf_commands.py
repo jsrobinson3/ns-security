@@ -49,7 +49,8 @@ def _display_install_plan(pf, mode, skip_evasive):
     table.add_row("security2.conf", sec2_state, sec2_action)
 
     if not skip_evasive:
-        table.add_row("mod_evasive", "", "install if missing")
+        evasive_action = "install + enable" if mode == "On" else "install config (disabled in DetectionOnly)"
+        table.add_row("mod_evasive", "", evasive_action)
 
     console.print(table)
 
@@ -132,6 +133,12 @@ def _build_status_table(status):
             table.add_row("CRS path", status.crs_path)
     else:
         table.add_row("OWASP CRS", "[red]not installed[/red]")
+
+    if status.evasive_installed:
+        evasive_state = "[green]enabled[/green]" if status.evasive_enabled else "[yellow]disabled[/yellow]"
+        table.add_row("mod_evasive", evasive_state)
+    else:
+        table.add_row("mod_evasive", "[dim]not installed[/dim]")
 
     table.add_row("NS exclusions", _yn(status.exclusions_present, "yellow"))
     table.add_row("Audit log", _yn(status.audit_log_exists, "dim"))
@@ -219,6 +226,9 @@ def waf_enable(yes):
         "will actively reject requests that match ModSecurity rules."
     )
     console.print(
+        "This will also [bold]enable mod_evasive[/bold] (HTTP flood protection)."
+    )
+    console.print(
         "Ensure you have reviewed "
         "[cyan]/var/log/apache2/modsec_audit.log[/cyan] for false positives."
     )
@@ -234,6 +244,89 @@ def waf_enable(yes):
     else:
         console.print(f"[red]Error: {result.error}[/red]")
         raise SystemExit(1)
+
+
+@waf.command("disable")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def waf_disable(yes):
+    """Switch ModSecurity to DetectionOnly mode (logs but does not block)."""
+    from nssec.modules.waf import ModSecurityInstaller
+
+    installer = ModSecurityInstaller()
+    pf = installer.preflight()
+    _require_root_and_modsec(pf, "sudo nssec waf disable")
+
+    if pf.modsec_mode and pf.modsec_mode.lower() == "detectiononly":
+        console.print("[green]ModSecurity is already in DetectionOnly mode.[/green]")
+        return
+
+    console.print(
+        "Switching to [cyan]DetectionOnly[/cyan] mode. "
+        "ModSecurity will log violations but not block requests."
+    )
+    console.print(
+        "This will also [bold]disable mod_evasive[/bold] (HTTP flood protection)."
+    )
+    console.print()
+
+    if not yes and not click.confirm("Switch SecRuleEngine to DetectionOnly?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    result = installer.set_mode("DetectionOnly")
+    if result.success:
+        console.print(f"[green]{result.message}[/green]")
+    else:
+        console.print(f"[red]Error: {result.error}[/red]")
+        raise SystemExit(1)
+
+
+@waf.command("remove")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def waf_remove(yes):
+    """Disable the ModSecurity Apache module entirely.
+
+    This disables the security2 module in Apache, effectively turning off
+    the WAF completely. Use 'nssec waf init' to re-enable.
+    """
+    from nssec.modules.waf import ModSecurityInstaller
+    from nssec.modules.waf.utils import run_cmd, file_exists
+    from nssec.modules.waf.config import SECURITY2_LOAD
+    from nssec.core.ssh import is_root
+
+    if not is_root():
+        console.print("[red]Error: Must run as root (sudo nssec waf remove)[/red]")
+        raise SystemExit(1)
+
+    if not file_exists(SECURITY2_LOAD):
+        console.print("[green]ModSecurity module is already disabled.[/green]")
+        return
+
+    console.print(
+        "[bold yellow]Warning:[/bold yellow] This will completely disable "
+        "the ModSecurity WAF module."
+    )
+    console.print()
+
+    if not yes and not click.confirm("Disable ModSecurity module?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    _, stderr, rc = run_cmd(["a2dismod", "security2"])
+    if rc != 0:
+        console.print(f"[red]Error:[/red] Failed to disable module: {stderr}")
+        raise SystemExit(1)
+    console.print("[green]Done:[/green] Disabled security2 module")
+
+    _, stderr, rc = run_cmd(["systemctl", "reload", "apache2"])
+    if rc != 0:
+        console.print(f"[red]Error:[/red] Apache reload failed: {stderr}")
+        raise SystemExit(1)
+    console.print("[green]Done:[/green] Apache reloaded")
+
+    console.print()
+    console.print("ModSecurity is now disabled. To re-enable, run:")
+    console.print("  [cyan]sudo nssec waf init[/cyan]")
 
 
 @waf.command("update-exclusions")

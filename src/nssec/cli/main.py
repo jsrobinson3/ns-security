@@ -191,9 +191,11 @@ def init(config_dir):
 # ─── REGISTER SUB-COMMAND GROUPS ───
 
 from nssec.cli.audit import audit  # noqa: E402
+from nssec.cli.mtls_commands import mtls  # noqa: E402
 from nssec.cli.waf_commands import waf  # noqa: E402
 
 cli.add_command(audit)
+cli.add_command(mtls)
 cli.add_command(waf)
 
 
