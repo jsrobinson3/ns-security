@@ -4,6 +4,9 @@
 MODSEC_PACKAGE = "libapache2-mod-security2"
 CRS_APT_PACKAGE = "modsecurity-crs"
 EVASIVE_PACKAGE = "libapache2-mod-evasive"
+EVASIVE_CONF = "/etc/apache2/mods-available/evasive.conf"
+EVASIVE_LOAD = "/etc/apache2/mods-enabled/evasive.load"
+EVASIVE_LOG_DIR = "/var/log/apache2/mod_evasive"
 
 # CRS version pinning (used when apt ships v3.x)
 PINNED_CRS_VERSION = "4.8.0"
@@ -297,4 +300,60 @@ SecAction \\
      pass,\\
      t:none,\\
      setvar:'tx.allowed_request_content_type=|application/x-www-form-urlencoded| |multipart/form-data| |multipart/related| |multipart/mixed| |text/xml| |application/xml| |application/soap+xml| |application/json| |application/cloudevents+json| |application/cloudevents-batch+json|'"
+"""
+
+EVASIVE_CONF_TEMPLATE = """\
+# mod_evasive Configuration
+# Managed by nssec
+# Generated: {{ timestamp }}
+#
+# HTTP flood / DDoS protection for Apache.
+# Thresholds tuned for NetSapiens traffic patterns (~270 req/s sustained,
+# peak ~318 req/s across hundreds of IPs).
+
+<IfModule mod_evasive20.c>
+    # Hash table size — prime number with headroom above expected unique IPs
+    DOSHashTableSize        3097
+
+    # Max requests to the same page per interval before blocking
+    # Tightened from default (2) — scanner patterns warrant 15/s per-page
+    DOSPageCount            15
+
+    # Max total requests from one IP per interval before blocking
+    # Peak burst is ~318 req/s total across ~372 IPs; 60/s per-IP is generous
+    DOSSiteCount            60
+
+    # Sliding window intervals (seconds)
+    DOSPageInterval         1
+    DOSSiteInterval         1
+
+    # How long (seconds) an IP is blocked once a threshold is hit
+    # 60s block breaks automated scanner loops without permanent impact
+    DOSBlockingPeriod       60
+
+    # Log blocked IPs here
+    DOSLogDir               {{ log_dir }}
+
+    # Whitelist RFC 1918 private ranges and loopback to avoid false positives
+    # on internal NS service traffic and cluster communication
+    DOSWhitelist            127.0.0.1
+    DOSWhitelist            10.*.*.*
+    DOSWhitelist            172.16.*.*
+    DOSWhitelist            172.17.*.*
+    DOSWhitelist            172.18.*.*
+    DOSWhitelist            172.19.*.*
+    DOSWhitelist            172.20.*.*
+    DOSWhitelist            172.21.*.*
+    DOSWhitelist            172.22.*.*
+    DOSWhitelist            172.23.*.*
+    DOSWhitelist            172.24.*.*
+    DOSWhitelist            172.25.*.*
+    DOSWhitelist            172.26.*.*
+    DOSWhitelist            172.27.*.*
+    DOSWhitelist            172.28.*.*
+    DOSWhitelist            172.29.*.*
+    DOSWhitelist            172.30.*.*
+    DOSWhitelist            172.31.*.*
+    DOSWhitelist            192.168.*.*
+</IfModule>
 """

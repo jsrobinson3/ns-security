@@ -8,6 +8,8 @@ from typing import Optional
 
 from nssec.modules.waf.config import (
     CRS_SEARCH_PATHS,
+    EVASIVE_LOAD,
+    EVASIVE_PACKAGE,
     MODSEC_AUDIT_LOG,
     MODSEC_CONF,
     MODSEC_PACKAGE,
@@ -26,6 +28,8 @@ class WafStatus:
     crs_installed: bool = False
     crs_version: Optional[str] = None
     crs_path: Optional[str] = None
+    evasive_installed: bool = False
+    evasive_enabled: bool = False
     exclusions_present: bool = False
     audit_log_exists: bool = False
     recent_log_lines: list[str] = field(default_factory=list)
@@ -90,6 +94,9 @@ def get_waf_status() -> WafStatus:
         if version_file.exists():
             status.crs_version = version_file.read_text().strip()
         break
+
+    status.evasive_installed = _pkg_installed(EVASIVE_PACKAGE)
+    status.evasive_enabled = Path(EVASIVE_LOAD).exists()
 
     status.exclusions_present = Path(NS_EXCLUSIONS_CONF).exists()
     status.audit_log_exists = Path(MODSEC_AUDIT_LOG).exists()
