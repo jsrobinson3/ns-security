@@ -804,15 +804,22 @@ def waf_restrict_init(ips, dry_run, yes):
     if not ip_list:
         console.print(
             "[bold]Enter IP addresses to allow access[/bold] "
-            "(space or comma separated)."
+            "(one per line, or space/comma separated)."
         )
         console.print(
             "  Include NetSapiens TAC IPs and your admin office IPs."
         )
         console.print("  127.0.0.1 is always included automatically.")
+        console.print("  Press Enter on a blank line when done.")
         console.print()
-        raw = click.prompt("IPs to allow", default="")
-        # Split on commas and whitespace
+        lines: list[str] = []
+        while True:
+            line = click.prompt("IP", default="", show_default=False)
+            if not line.strip():
+                break
+            lines.append(line)
+        # Split on commas and whitespace across all lines
+        raw = " ".join(lines)
         ip_list = [s.strip() for s in raw.replace(",", " ").split() if s.strip()]
 
     # Validate each IP
