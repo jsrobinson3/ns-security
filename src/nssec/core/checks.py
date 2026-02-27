@@ -612,13 +612,15 @@ class ProtectedRoutesCheck(BaseCheck):
     name = "Protected Routes Configuration"
     description = "Verify sensitive admin routes have IP restrictions"
     severity = Severity.HIGH
-    applies_to = ["core", "combo"]
+    applies_to = ["core", "ndp", "recording", "combo"]
     reference = f"{NS_DOCS} - search 'Securing Your NetSapiens System'"
 
     def run(self) -> CheckResult:
         protected_paths = [
             ("/usr/local/NetSapiens/SiPbx/html/SiPbx", "Admin UI"),
             ("/usr/local/NetSapiens/SiPbx/html/ns-api", "API"),
+            ("/usr/local/NetSapiens/ndp", "NDP"),
+            ("/usr/local/NetSapiens/LiCf/html/LiCf", "LiCf Recording"),
         ]
 
         unprotected = []
@@ -648,7 +650,7 @@ class ProtectedRoutesCheck(BaseCheck):
             return self._fail(
                 f"Unprotected routes: {', '.join(unprotected)}",
                 details="Admin routes should restrict access by IP",
-                remediation="Add IP restrictions to .htaccess or configure ModSecurity",
+                remediation="Run 'nssec waf restrict init' to create .htaccess IP restrictions",
             )
 
         return self._pass(f"Protected routes: {', '.join(protected)}")
@@ -1246,15 +1248,16 @@ class AdminUIProtectionCheck(BaseCheck):
             )
 
         htaccess = Path(htaccess_path)
-        if file_contains(htaccess, "Allow from", ignore_comments=True):
+        has_legacy = file_contains(htaccess, "Allow from", ignore_comments=True)
+        has_modern = file_contains(htaccess, "Require ip", ignore_comments=True)
+        if has_legacy or has_modern:
             return self._pass("Admin UI has IP restrictions configured")
 
         return self._fail(
             "Admin UI does not have IP restrictions",
             remediation=(
-                "Configure IP allowlist in .htaccess or use "
-                f"ModSecurity. See {NS_DOCS} - search "
-                "'Securing Your NetSapiens System'"
+                "Run 'nssec waf restrict init' to create IP restrictions, "
+                f"or see {NS_DOCS} - search 'Securing Your NetSapiens System'"
             ),
         )
 

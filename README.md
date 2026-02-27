@@ -100,6 +100,69 @@ The WAF module includes:
 - NetSapiens exclusion rules for admin UI, ns-api, SiPbx, NqsProxy, and iNSight health checks
 - CRS tuning for allowed HTTP methods and content types used by NetSapiens
 
+### Path Restrictions (.htaccess)
+
+Restrict access to sensitive NetSapiens paths (admin UI, API, NDP, recording) using `.htaccess` IP allowlists:
+
+```bash
+# Show current restriction status
+nssec waf restrict show
+
+# Create .htaccess restrictions (interactive — shows existing IPs, asks to keep or overwrite)
+sudo nssec waf restrict init
+
+# Specify IPs directly
+sudo nssec waf restrict init --ip 1.1.1.1 --ip 1.2.3.0/22
+
+# Add/remove individual IPs
+sudo nssec waf restrict add 1.1.1.1
+sudo nssec waf restrict remove 1.1.1.1
+
+# Re-deploy after a NetSapiens package upgrade overwrites .htaccess files
+sudo nssec waf restrict reapply
+```
+
+The `init` command will:
+- Detect which paths apply to the current server type (Core, NDP, Recording, Combo)
+- Show any existing IPs from current `.htaccess` files and ask whether to keep or overwrite them
+- Always include `127.0.0.1` automatically
+- Save the IP list to `/etc/nssec/restrict-ips.json` so it survives NS package upgrades
+
+**Protected paths:**
+
+| Target | Path | Server Types |
+|--------|------|:------------:|
+| SiPbx Admin UI | `/usr/local/NetSapiens/SiPbx/html/SiPbx/` | Core, Combo |
+| ns-api | `/usr/local/NetSapiens/SiPbx/html/ns-api/` | Core, Combo |
+| NDP Endpoints | `/usr/local/NetSapiens/ndp/` | NDP, Combo |
+| LiCf Recording | `/usr/local/NetSapiens/LiCf/html/LiCf/` | Recording, Combo |
+
+### mod_evasive (HTTP Flood Protection)
+
+mod_evasive is managed independently from the WAF and provides application-layer DDoS protection. It has **no detection-only mode** — when enabled it will block IPs that exceed request thresholds (HTTP 403).
+
+```bash
+# Check mod_evasive status
+nssec waf evasive status
+
+# Enable with standard profile (high thresholds — safe default)
+sudo nssec waf evasive enable
+
+# Enable with strict profile (tuned for NetSapiens traffic)
+sudo nssec waf evasive enable --profile strict
+
+# Disable
+sudo nssec waf evasive disable
+```
+
+**Profiles:**
+| Profile | DOSPageCount | DOSSiteCount | DOSBlockingPeriod | Use Case |
+|---------|:---:|:---:|:---:|------|
+| `standard` | 100 req/page/s | 500 req/IP/s | 10s | Safe default — only catches extreme floods |
+| `strict` | 15 req/page/s | 60 req/IP/s | 60s | Tuned for NetSapiens traffic patterns |
+
+Start with `standard` and review the Apache API Usage dashboard and mod_evasive block logs before switching to `strict`. Block events are logged to `/var/log/apache2/mod_evasive.log` for Loki/Grafana ingestion.
+
 ## Server Types
 
 | Component | Core | NDP | Recording | QoS |
@@ -121,6 +184,7 @@ Pre-built dashboards are available for import into your Grafana/iNSight instance
 - `api.json` — API v1/v2 request rate monitoring (Prometheus)
 - `apacheApiUsage.json` — Apache access log analysis by IP and path (Loki)
 - `modsecurityWaf.json` — ModSecurity WAF event analysis: severity, attacking IPs, triggered rules, targeted URIs (Loki)
+- `modEvasive.json` — mod_evasive HTTP flood protection: blocked IPs, block rate, repeat offenders (Loki)
 
 ## Related Projects
 
@@ -142,6 +206,7 @@ These community projects provide additional NetSapiens security capabilities:
 - [x] ModSecurity installation and configuration with OWASP CRS
 - [x] NetSapiens-specific WAF exclusion rules
 - [x] ModSecurity WAF monitoring dashboard
+- [x] .htaccess IP restrictions for sensitive paths
 - [ ] MySQL password rotation across all NS services
 - [ ] Fail2ban SIP plugin for NetSapiens
 

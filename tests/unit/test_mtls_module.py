@@ -2,10 +2,14 @@
 
 from nssec.modules.mtls.config import NODEPING_BEGIN_MARKER, NODEPING_END_MARKER
 from nssec.modules.mtls.utils import (
+    add_ip_to_requireany,
     build_managed_section,
     find_requireany_block,
+    get_all_requireany_ips,
     get_managed_section,
+    get_requireany_bounds,
     parse_ip_list,
+    remove_ip_from_requireany,
 )
 
 
@@ -163,3 +167,130 @@ class TestFindRequireanyBlock:
 """
         pos = find_requireany_block(content)
         assert pos == -1
+
+
+SAMPLE_CONF = f"""
+<Location /cfg>
+    SSLVerifyClient require
+    <RequireAny>
+        Require ip 10.0.0.1
+        Require ip 192.168.1.0/24
+        {NODEPING_BEGIN_MARKER}
+        Require ip 1.2.3.4
+        Require ip 5.6.7.8
+        {NODEPING_END_MARKER}
+    </RequireAny>
+</Location>
+"""
+
+SAMPLE_CONF_NO_MANAGED = """
+<Location /cfg>
+    SSLVerifyClient require
+    <RequireAny>
+        Require ip 10.0.0.1
+        Require ip 192.168.1.0/24
+    </RequireAny>
+</Location>
+"""
+
+
+class TestGetRequireanyBounds:
+    """Tests for get_requireany_bounds function."""
+
+    def test_finds_block_bounds(self):
+        start, end = get_requireany_bounds(SAMPLE_CONF)
+        assert start > 0
+        assert end > start
+        block = SAMPLE_CONF[start:end]
+        assert "Require ip 10.0.0.1" in block
+        assert "</RequireAny>" not in block
+
+    def test_returns_negative_when_no_location(self):
+        content = "<RequireAny>\n    Require ip 1.2.3.4\n</RequireAny>"
+        start, end = get_requireany_bounds(content)
+        assert start == -1
+        assert end == -1
+
+    def test_returns_negative_when_no_requireany(self):
+        content = "<Location /cfg>\n    Require ip 1.2.3.4\n</Location>"
+        start, end = get_requireany_bounds(content)
+        assert start == -1
+        assert end == -1
+
+
+class TestGetAllRequireanyIps:
+    """Tests for get_all_requireany_ips function."""
+
+    def test_returns_all_ips_with_managed_flag(self):
+        results = get_all_requireany_ips(SAMPLE_CONF)
+        ips = [r["ip"] for r in results]
+        assert "10.0.0.1" in ips
+        assert "192.168.1.0/24" in ips
+        assert "1.2.3.4" in ips
+        assert "5.6.7.8" in ips
+
+    def test_marks_managed_ips_correctly(self):
+        results = get_all_requireany_ips(SAMPLE_CONF)
+        by_ip = {r["ip"]: r["managed"] for r in results}
+        assert by_ip["10.0.0.1"] is False
+        assert by_ip["192.168.1.0/24"] is False
+        assert by_ip["1.2.3.4"] is True
+        assert by_ip["5.6.7.8"] is True
+
+    def test_no_managed_section(self):
+        results = get_all_requireany_ips(SAMPLE_CONF_NO_MANAGED)
+        assert len(results) == 2
+        assert all(not r["managed"] for r in results)
+
+    def test_empty_content(self):
+        results = get_all_requireany_ips("")
+        assert results == []
+
+
+class TestAddIpToRequireany:
+    """Tests for add_ip_to_requireany function."""
+
+    def test_adds_ip_to_block(self):
+        new_content, error = add_ip_to_requireany(SAMPLE_CONF_NO_MANAGED, "203.0.113.1")
+        assert error == ""
+        assert "Require ip 203.0.113.1" in new_content
+
+    def test_rejects_duplicate_ip(self):
+        _, error = add_ip_to_requireany(SAMPLE_CONF_NO_MANAGED, "10.0.0.1")
+        assert "already in the allowlist" in error
+
+    def test_adds_outside_managed_section(self):
+        new_content, error = add_ip_to_requireany(SAMPLE_CONF, "203.0.113.1")
+        assert error == ""
+        assert "Require ip 203.0.113.1" in new_content
+        # The new IP should be before the managed section
+        new_ip_pos = new_content.find("Require ip 203.0.113.1")
+        managed_pos = new_content.find(NODEPING_BEGIN_MARKER)
+        assert new_ip_pos < managed_pos
+
+    def test_returns_error_when_no_block(self):
+        _, error = add_ip_to_requireany("no block here", "1.2.3.4")
+        assert "Could not find" in error
+
+
+class TestRemoveIpFromRequireany:
+    """Tests for remove_ip_from_requireany function."""
+
+    def test_removes_manual_ip(self):
+        new_content, error = remove_ip_from_requireany(SAMPLE_CONF, "10.0.0.1")
+        assert error == ""
+        assert "Require ip 10.0.0.1" not in new_content
+        # Other IPs should remain
+        assert "Require ip 192.168.1.0/24" in new_content
+
+    def test_blocks_removal_of_managed_ip(self):
+        _, error = remove_ip_from_requireany(SAMPLE_CONF, "1.2.3.4")
+        assert "managed by NodePing" in error
+
+    def test_returns_error_for_missing_ip(self):
+        _, error = remove_ip_from_requireany(SAMPLE_CONF, "99.99.99.99")
+        assert "not found" in error
+
+    def test_returns_error_when_no_block(self):
+        _, error = remove_ip_from_requireany("no block here", "1.2.3.4")
+        assert "Could not find" in error
