@@ -112,11 +112,11 @@ nssec waf restrict show
 sudo nssec waf restrict init
 
 # Specify IPs directly
-sudo nssec waf restrict init --ip 74.219.23.50 --ip 65.110.48.0/22
+sudo nssec waf restrict init --ip 1.1.1.1 --ip 1.2.3.0/22
 
 # Add/remove individual IPs
-sudo nssec waf restrict add 203.0.113.10
-sudo nssec waf restrict remove 203.0.113.10
+sudo nssec waf restrict add 1.1.1.1
+sudo nssec waf restrict remove 1.1.1.1
 
 # Re-deploy after a NetSapiens package upgrade overwrites .htaccess files
 sudo nssec waf restrict reapply
