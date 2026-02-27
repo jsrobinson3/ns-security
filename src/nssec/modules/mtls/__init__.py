@@ -10,13 +10,16 @@ from dataclasses import dataclass
 
 from nssec.modules.mtls.config import BACKUP_SUFFIX, NDP_MTLS_CONF
 from nssec.modules.mtls.utils import (
+    add_ip_to_requireany,
     backup_file,
     build_managed_section,
     fetch_nodeping_ips,
     file_exists,
     find_requireany_block,
+    get_all_requireany_ips,
     get_managed_section,
     read_file,
+    remove_ip_from_requireany,
     run_cmd,
     write_file,
 )
@@ -128,6 +131,63 @@ def remove_nodeping_ips() -> StepResult:
         return StepResult(success=False, error=f"Failed to write {NDP_MTLS_CONF}")
 
     return StepResult(message="Removed NodePing IPs section from ndp_mtls.conf")
+
+
+def get_allowlist_ips() -> list[dict]:
+    """Get all whitelisted IPs from ndp_mtls.conf.
+
+    Returns list of dicts with 'ip' and 'managed' (bool) keys.
+    """
+    content = read_file(NDP_MTLS_CONF)
+    if not content:
+        return []
+    return get_all_requireany_ips(content)
+
+
+def add_allowlist_ip(ip: str) -> StepResult:
+    """Add an IP to the mTLS allowlist in ndp_mtls.conf."""
+    if not file_exists(NDP_MTLS_CONF):
+        return StepResult(
+            success=False,
+            error=f"{NDP_MTLS_CONF} not found. Is mTLSProtect installed?",
+        )
+
+    content = read_file(NDP_MTLS_CONF)
+    if not content:
+        return StepResult(success=False, error=f"Failed to read {NDP_MTLS_CONF}")
+
+    new_content, error = add_ip_to_requireany(content, ip)
+    if error:
+        return StepResult(success=False, error=error)
+
+    backup_file(NDP_MTLS_CONF)
+    if not write_file(NDP_MTLS_CONF, new_content):
+        return StepResult(success=False, error=f"Failed to write {NDP_MTLS_CONF}")
+
+    return StepResult(message=f"Added {ip} to mTLS allowlist")
+
+
+def remove_allowlist_ip(ip: str) -> StepResult:
+    """Remove an IP from the mTLS allowlist in ndp_mtls.conf."""
+    if not file_exists(NDP_MTLS_CONF):
+        return StepResult(
+            success=False,
+            error=f"{NDP_MTLS_CONF} not found. Is mTLSProtect installed?",
+        )
+
+    content = read_file(NDP_MTLS_CONF)
+    if not content:
+        return StepResult(success=False, error=f"Failed to read {NDP_MTLS_CONF}")
+
+    new_content, error = remove_ip_from_requireany(content, ip)
+    if error:
+        return StepResult(success=False, error=error)
+
+    backup_file(NDP_MTLS_CONF)
+    if not write_file(NDP_MTLS_CONF, new_content):
+        return StepResult(success=False, error=f"Failed to write {NDP_MTLS_CONF}")
+
+    return StepResult(message=f"Removed {ip} from mTLS allowlist")
 
 
 def validate_apache_config() -> StepResult:

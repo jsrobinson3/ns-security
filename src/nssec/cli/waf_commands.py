@@ -49,8 +49,7 @@ def _display_install_plan(pf, mode, skip_evasive):
     table.add_row("security2.conf", sec2_state, sec2_action)
 
     if not skip_evasive:
-        evasive_action = "install + enable" if mode == "On" else "install config (disabled in DetectionOnly)"
-        table.add_row("mod_evasive", "", evasive_action)
+        table.add_row("mod_evasive", "", "install + enable")
 
     console.print(table)
 
@@ -226,9 +225,6 @@ def waf_enable(yes):
         "will actively reject requests that match ModSecurity rules."
     )
     console.print(
-        "This will also [bold]enable mod_evasive[/bold] (HTTP flood protection)."
-    )
-    console.print(
         "Ensure you have reviewed "
         "[cyan]/var/log/apache2/modsec_audit.log[/cyan] for false positives."
     )
@@ -241,6 +237,11 @@ def waf_enable(yes):
     result = installer.set_mode("On")
     if result.success:
         console.print(f"[green]{result.message}[/green]")
+        console.print()
+        console.print(
+            "[bold]Tip:[/bold] To also enable HTTP flood protection, run:"
+        )
+        console.print("  [cyan]sudo nssec waf evasive enable[/cyan]")
     else:
         console.print(f"[red]Error: {result.error}[/red]")
         raise SystemExit(1)
@@ -263,9 +264,6 @@ def waf_disable(yes):
     console.print(
         "Switching to [cyan]DetectionOnly[/cyan] mode. "
         "ModSecurity will log violations but not block requests."
-    )
-    console.print(
-        "This will also [bold]disable mod_evasive[/bold] (HTTP flood protection)."
     )
     console.print()
 
@@ -493,3 +491,171 @@ def waf_allowlist_delete(ip, yes):
     console.print(f"  [green]Done:[/green] {val.message}")
 
     _prompt_and_reload_apache(installer, yes)
+
+
+# ─── EVASIVE SUBCOMMANDS ───
+
+
+@waf.group("evasive", invoke_without_command=True)
+@click.pass_context
+def waf_evasive(ctx):
+    """Manage mod_evasive (HTTP flood protection)."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(waf_evasive_status)
+
+
+@waf_evasive.command("enable")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.option(
+    "--profile",
+    type=click.Choice(["standard", "strict"]),
+    default="standard",
+    help="Threshold profile: standard (high thresholds, safe default) or strict (tuned for NS traffic)",
+)
+def waf_evasive_enable(yes, profile):
+    """Enable mod_evasive HTTP flood protection.
+
+    mod_evasive has NO detection-only mode — it WILL block IPs that exceed
+    the configured thresholds (HTTP 403).
+
+    \b
+    Profiles:
+      standard  High thresholds (100 req/page, 500 req/site). Safe default
+                that only catches extreme floods. Start here.
+      strict    Tight thresholds (15 req/page, 60 req/site) tuned for
+                NetSapiens traffic. Use after reviewing traffic patterns.
+
+    Review your traffic with the Apache API Usage dashboard or access logs
+    before switching to the strict profile.
+    """
+    from nssec.modules.waf import ModSecurityInstaller
+    from nssec.modules.waf.config import EVASIVE_PACKAGE, EVASIVE_PROFILES
+    from nssec.modules.waf.utils import package_installed
+
+    installer = ModSecurityInstaller()
+    pf = installer.preflight()
+
+    if not pf.is_root:
+        console.print("[red]Error: Must run as root (sudo nssec waf evasive enable)[/red]")
+        raise SystemExit(1)
+
+    if not package_installed(EVASIVE_PACKAGE):
+        console.print(
+            "[red]Error: mod_evasive is not installed. "
+            "Run 'nssec waf init' first.[/red]"
+        )
+        raise SystemExit(1)
+
+    thresholds = EVASIVE_PROFILES[profile]
+    console.print(
+        f"[bold yellow]Warning:[/bold yellow] mod_evasive has no detection-only mode. "
+        "When enabled it [bold]will block[/bold] IPs that exceed thresholds (HTTP 403)."
+    )
+    console.print(f"  Profile:          [cyan]{profile}[/cyan]")
+    console.print(f"  DOSPageCount:     {thresholds['page_count']} req/page/s")
+    console.print(f"  DOSSiteCount:     {thresholds['site_count']} req/IP/s")
+    console.print(f"  DOSBlockingPeriod: {thresholds['blocking_period']}s")
+    console.print()
+    console.print(
+        "Review traffic patterns before enabling. Use the Apache API Usage "
+        "dashboard or [cyan]tail -f /var/log/apache2/access.log[/cyan]."
+    )
+    console.print()
+
+    if not yes and not click.confirm("Enable mod_evasive?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    config_result = installer.setup_evasive_config(profile=profile)
+    if not config_result.success and not config_result.skipped:
+        console.print(f"[red]Error: {config_result.error}[/red]")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {config_result.message}")
+
+    result = installer.set_evasive_state(enable=True)
+    if result.skipped:
+        console.print(f"  [green]{result.message}[/green]")
+    elif not result.success:
+        console.print(f"[red]Error: {result.error}[/red]")
+        raise SystemExit(1)
+    else:
+        console.print(f"  [green]Done:[/green] {result.message}")
+
+    _prompt_and_reload_apache(installer, yes)
+
+
+@waf_evasive.command("disable")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def waf_evasive_disable(yes):
+    """Disable mod_evasive HTTP flood protection."""
+    from nssec.modules.waf import ModSecurityInstaller
+    from nssec.core.ssh import is_root
+
+    if not is_root():
+        console.print("[red]Error: Must run as root (sudo nssec waf evasive disable)[/red]")
+        raise SystemExit(1)
+
+    console.print(
+        "[bold yellow]Warning:[/bold yellow] Disabling mod_evasive removes "
+        "HTTP flood protection. The server will be vulnerable to "
+        "application-layer DDoS attacks."
+    )
+    console.print()
+
+    if not yes and not click.confirm("Disable mod_evasive?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    installer = ModSecurityInstaller()
+    result = installer.set_evasive_state(enable=False)
+    if result.skipped:
+        console.print(f"[green]{result.message}[/green]")
+        return
+
+    if not result.success:
+        console.print(f"[red]Error: {result.error}[/red]")
+        raise SystemExit(1)
+
+    console.print(f"[green]{result.message}[/green]")
+    _prompt_and_reload_apache(installer, yes)
+
+
+@waf_evasive.command("status")
+def waf_evasive_status():
+    """Show mod_evasive status."""
+    from nssec.modules.waf.config import EVASIVE_CONF, EVASIVE_LOAD, EVASIVE_PACKAGE
+    from nssec.modules.waf.utils import file_exists, package_installed, read_file
+
+    installed = package_installed(EVASIVE_PACKAGE)
+    enabled = file_exists(EVASIVE_LOAD)
+    configured = file_exists(EVASIVE_CONF)
+
+    console.print("[bold]mod_evasive Status[/bold]\n")
+
+    if not installed:
+        console.print("  Installed:  [red]no[/red]")
+        console.print("\n  Run [cyan]nssec waf init[/cyan] to install.")
+        return
+
+    console.print("  Installed:  [green]yes[/green]")
+    console.print(f"  Configured: {_yn(configured)}")
+
+    if enabled:
+        console.print("  Module:     [green]enabled[/green]")
+    else:
+        console.print("  Module:     [yellow]disabled[/yellow]")
+
+    # Show active profile from config comment
+    if configured:
+        content = read_file(EVASIVE_CONF) or ""
+        profile = "unknown"
+        for line in content.splitlines():
+            if line.startswith("# Profile:"):
+                profile = line.split(":", 1)[1].strip()
+                break
+        console.print(f"  Profile:    [cyan]{profile}[/cyan]")
+
+    if not enabled:
+        console.print(
+            "\n  Enable with: [cyan]sudo nssec waf evasive enable[/cyan]"
+        )

@@ -217,3 +217,110 @@ class TestWafAllowlistShow:
 
             assert result.exit_code == 0
             assert "192.168.1.100" in result.output
+
+
+class TestWafEvasiveEnable:
+    """Tests for waf evasive enable command."""
+
+    def test_enables_evasive(self, runner, mock_installer):
+        """Should enable mod_evasive."""
+        mock_installer.set_evasive_state.return_value = MagicMock(
+            success=True, skipped=False, message="Enabled mod_evasive"
+        )
+
+        with patch("nssec.modules.waf.utils.package_installed", return_value=True):
+            result = runner.invoke(waf, ["evasive", "enable", "-y"])
+
+        assert result.exit_code == 0
+        mock_installer.set_evasive_state.assert_called_once_with(enable=True)
+
+    def test_skips_if_already_enabled(self, runner, mock_installer):
+        """Should report already enabled."""
+        mock_installer.set_evasive_state.return_value = MagicMock(
+            success=True, skipped=True, message="mod_evasive already enabled"
+        )
+
+        with patch("nssec.modules.waf.utils.package_installed", return_value=True):
+            result = runner.invoke(waf, ["evasive", "enable", "-y"])
+
+        assert result.exit_code == 0
+        assert "already enabled" in result.output
+
+    def test_requires_root(self, runner, mock_installer):
+        """Should fail if not root."""
+        mock_installer.preflight.return_value.is_root = False
+
+        result = runner.invoke(waf, ["evasive", "enable", "-y"])
+
+        assert result.exit_code == 1
+        assert "root" in result.output.lower()
+
+    def test_requires_package_installed(self, runner, mock_installer):
+        """Should fail if mod_evasive package not installed."""
+        with patch("nssec.modules.waf.utils.package_installed", return_value=False):
+            result = runner.invoke(waf, ["evasive", "enable", "-y"])
+
+        assert result.exit_code == 1
+        assert "not installed" in result.output.lower()
+
+
+class TestWafEvasiveDisable:
+    """Tests for waf evasive disable command."""
+
+    def test_disables_evasive(self, runner, mock_installer):
+        """Should disable mod_evasive."""
+        mock_installer.set_evasive_state.return_value = MagicMock(
+            success=True, skipped=False, message="Disabled mod_evasive"
+        )
+
+        with patch("nssec.core.ssh.is_root", return_value=True):
+            result = runner.invoke(waf, ["evasive", "disable", "-y"])
+
+        assert result.exit_code == 0
+        mock_installer.set_evasive_state.assert_called_once_with(enable=False)
+
+    def test_prompts_without_yes_flag(self, runner, mock_installer):
+        """Should prompt for confirmation without -y flag."""
+        with patch("nssec.core.ssh.is_root", return_value=True):
+            result = runner.invoke(waf, ["evasive", "disable"], input="n\n")
+
+        assert "Aborted" in result.output
+        mock_installer.set_evasive_state.assert_not_called()
+
+    def test_requires_root(self, runner):
+        """Should fail if not root."""
+        with patch("nssec.core.ssh.is_root", return_value=False):
+            result = runner.invoke(waf, ["evasive", "disable", "-y"])
+
+        assert result.exit_code == 1
+        assert "root" in result.output.lower()
+
+
+class TestWafEvasiveStatus:
+    """Tests for waf evasive status command."""
+
+    def test_shows_enabled_status(self, runner):
+        """Should show enabled status when evasive is active."""
+        with patch("nssec.modules.waf.utils.package_installed", return_value=True), \
+             patch("nssec.modules.waf.utils.file_exists", return_value=True):
+            result = runner.invoke(waf, ["evasive", "status"])
+
+        assert result.exit_code == 0
+        assert "enabled" in result.output
+
+    def test_shows_not_installed(self, runner):
+        """Should indicate when not installed."""
+        with patch("nssec.modules.waf.utils.package_installed", return_value=False):
+            result = runner.invoke(waf, ["evasive", "status"])
+
+        assert result.exit_code == 0
+        assert "no" in result.output.lower()
+
+    def test_default_subcommand_shows_status(self, runner):
+        """Running 'waf evasive' without subcommand should show status."""
+        with patch("nssec.modules.waf.utils.package_installed", return_value=True), \
+             patch("nssec.modules.waf.utils.file_exists", return_value=True):
+            result = runner.invoke(waf, ["evasive"])
+
+        assert result.exit_code == 0
+        assert "mod_evasive Status" in result.output

@@ -7,6 +7,30 @@ EVASIVE_PACKAGE = "libapache2-mod-evasive"
 EVASIVE_CONF = "/etc/apache2/mods-available/evasive.conf"
 EVASIVE_LOAD = "/etc/apache2/mods-enabled/evasive.load"
 EVASIVE_LOG_DIR = "/var/log/apache2/mod_evasive"
+EVASIVE_LOG_FILE = "/var/log/apache2/mod_evasive.log"
+
+# mod_evasive threshold profiles
+# "standard" — high thresholds, safe default that only catches extreme floods.
+# "strict"   — tighter thresholds tuned for NetSapiens traffic patterns.
+EVASIVE_PROFILES = {
+    "standard": {
+        "hash_table_size": 3097,
+        "page_count": 100,
+        "site_count": 500,
+        "page_interval": 1,
+        "site_interval": 1,
+        "blocking_period": 10,
+    },
+    "strict": {
+        "hash_table_size": 3097,
+        "page_count": 15,
+        "site_count": 60,
+        "page_interval": 1,
+        "site_interval": 1,
+        "blocking_period": 60,
+    },
+}
+EVASIVE_DEFAULT_PROFILE = "standard"
 
 # CRS version pinning (used when apt ships v3.x)
 PINNED_CRS_VERSION = "4.8.0"
@@ -306,33 +330,36 @@ EVASIVE_CONF_TEMPLATE = """\
 # mod_evasive Configuration
 # Managed by nssec
 # Generated: {{ timestamp }}
+# Profile: {{ profile }}
 #
 # HTTP flood / DDoS protection for Apache.
-# Thresholds tuned for NetSapiens traffic patterns (~270 req/s sustained,
-# peak ~318 req/s across hundreds of IPs).
+# WARNING: mod_evasive has no detection-only mode. When enabled it WILL
+# return HTTP 403 to clients that exceed the thresholds below.
+# Review your traffic with 'nssec waf status' and the Apache API Usage
+# dashboard before switching to the strict profile.
 
 <IfModule mod_evasive20.c>
     # Hash table size — prime number with headroom above expected unique IPs
-    DOSHashTableSize        3097
+    DOSHashTableSize        {{ hash_table_size }}
 
     # Max requests to the same page per interval before blocking
-    # Tightened from default (2) — scanner patterns warrant 15/s per-page
-    DOSPageCount            15
+    DOSPageCount            {{ page_count }}
 
     # Max total requests from one IP per interval before blocking
-    # Peak burst is ~318 req/s total across ~372 IPs; 60/s per-IP is generous
-    DOSSiteCount            60
+    DOSSiteCount            {{ site_count }}
 
     # Sliding window intervals (seconds)
-    DOSPageInterval         1
-    DOSSiteInterval         1
+    DOSPageInterval         {{ page_interval }}
+    DOSSiteInterval         {{ site_interval }}
 
     # How long (seconds) an IP is blocked once a threshold is hit
-    # 60s block breaks automated scanner loops without permanent impact
-    DOSBlockingPeriod       60
+    DOSBlockingPeriod       {{ blocking_period }}
 
-    # Log blocked IPs here
+    # Log blocked IPs here (one file per IP)
     DOSLogDir               {{ log_dir }}
+
+    # Log block events to a structured log file for Loki/Grafana ingestion
+    DOSSystemCommand        "/bin/sh -c 'echo $(date -Is) action=blocked src_ip=%s >> {{ log_file }}'"
 
     # Whitelist RFC 1918 private ranges and loopback to avoid false positives
     # on internal NS service traffic and cluster communication

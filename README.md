@@ -100,6 +100,32 @@ The WAF module includes:
 - NetSapiens exclusion rules for admin UI, ns-api, SiPbx, NqsProxy, and iNSight health checks
 - CRS tuning for allowed HTTP methods and content types used by NetSapiens
 
+### mod_evasive (HTTP Flood Protection)
+
+mod_evasive is managed independently from the WAF and provides application-layer DDoS protection. It has **no detection-only mode** — when enabled it will block IPs that exceed request thresholds (HTTP 403).
+
+```bash
+# Check mod_evasive status
+nssec waf evasive status
+
+# Enable with standard profile (high thresholds — safe default)
+sudo nssec waf evasive enable
+
+# Enable with strict profile (tuned for NetSapiens traffic)
+sudo nssec waf evasive enable --profile strict
+
+# Disable
+sudo nssec waf evasive disable
+```
+
+**Profiles:**
+| Profile | DOSPageCount | DOSSiteCount | DOSBlockingPeriod | Use Case |
+|---------|:---:|:---:|:---:|------|
+| `standard` | 100 req/page/s | 500 req/IP/s | 10s | Safe default — only catches extreme floods |
+| `strict` | 15 req/page/s | 60 req/IP/s | 60s | Tuned for NetSapiens traffic patterns |
+
+Start with `standard` and review the Apache API Usage dashboard and mod_evasive block logs before switching to `strict`. Block events are logged to `/var/log/apache2/mod_evasive.log` for Loki/Grafana ingestion.
+
 ## Server Types
 
 | Component | Core | NDP | Recording | QoS |
@@ -121,6 +147,7 @@ Pre-built dashboards are available for import into your Grafana/iNSight instance
 - `api.json` — API v1/v2 request rate monitoring (Prometheus)
 - `apacheApiUsage.json` — Apache access log analysis by IP and path (Loki)
 - `modsecurityWaf.json` — ModSecurity WAF event analysis: severity, attacking IPs, triggered rules, targeted URIs (Loki)
+- `modEvasive.json` — mod_evasive HTTP flood protection: blocked IPs, block rate, repeat offenders (Loki)
 
 ## Related Projects
 

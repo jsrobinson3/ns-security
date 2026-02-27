@@ -164,14 +164,23 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
 class TestEvasiveConfTemplate:
     """Tests for the evasive.conf Jinja2 template."""
 
+    def _render_template(self, profile="standard", **overrides):
+        """Helper to render evasive template with profile defaults."""
+        from nssec.modules.waf.config import EVASIVE_CONF_TEMPLATE, EVASIVE_PROFILES
+
+        params = {
+            "timestamp": "test",
+            "profile": profile,
+            "log_dir": "/var/log/apache2/mod_evasive",
+            "log_file": "/var/log/apache2/mod_evasive.log",
+            **EVASIVE_PROFILES[profile],
+            **overrides,
+        }
+        return Template(EVASIVE_CONF_TEMPLATE).render(**params)
+
     def test_template_renders_with_required_directives(self):
         """Should render a valid evasive.conf with all key directives."""
-        from nssec.modules.waf.config import EVASIVE_CONF_TEMPLATE
-
-        rendered = Template(EVASIVE_CONF_TEMPLATE).render(
-            timestamp="2026-01-01 00:00 UTC",
-            log_dir="/var/log/apache2/mod_evasive",
-        )
+        rendered = self._render_template()
         assert "DOSHashTableSize" in rendered
         assert "DOSPageCount" in rendered
         assert "DOSSiteCount" in rendered
@@ -182,30 +191,38 @@ class TestEvasiveConfTemplate:
 
     def test_template_whitelists_rfc1918(self):
         """Should whitelist all RFC 1918 private ranges."""
-        from nssec.modules.waf.config import EVASIVE_CONF_TEMPLATE
-
-        rendered = Template(EVASIVE_CONF_TEMPLATE).render(
-            timestamp="test", log_dir="/tmp",
-        )
+        rendered = self._render_template()
         assert "10.*.*.*" in rendered
         assert "172.16.*.*" in rendered
         assert "172.31.*.*" in rendered
         assert "192.168.*.*" in rendered
 
-    def test_template_has_tuned_thresholds(self):
-        """Thresholds should be tuned for NetSapiens traffic patterns."""
-        from nssec.modules.waf.config import EVASIVE_CONF_TEMPLATE
+    def test_standard_profile_has_high_thresholds(self):
+        """Standard profile should have high thresholds for safety."""
+        rendered = self._render_template("standard")
+        assert "DOSPageCount            100" in rendered
+        assert "DOSSiteCount            500" in rendered
+        assert "DOSBlockingPeriod       10" in rendered
 
-        rendered = Template(EVASIVE_CONF_TEMPLATE).render(
-            timestamp="test",
-            log_dir="/tmp",
-        )
-        # DOSPageCount should be > 2 (default is too aggressive)
+    def test_strict_profile_has_tuned_thresholds(self):
+        """Strict profile should have tighter thresholds for NS traffic."""
+        rendered = self._render_template("strict")
         assert "DOSPageCount            15" in rendered
-        # DOSSiteCount tuned for ~318 peak req/s across ~372 IPs
         assert "DOSSiteCount            60" in rendered
-        # Extended blocking period for active scanners
         assert "DOSBlockingPeriod       60" in rendered
+
+    def test_template_renders_dos_system_command(self):
+        """Should render DOSSystemCommand for structured logging."""
+        rendered = self._render_template()
+        assert "DOSSystemCommand" in rendered
+        assert "/var/log/apache2/mod_evasive.log" in rendered
+        assert "action=blocked" in rendered
+        assert "src_ip=%s" in rendered
+
+    def test_template_includes_profile_name(self):
+        """Should include the profile name in the config comment."""
+        rendered = self._render_template("strict")
+        assert "Profile: strict" in rendered
 
 
 class TestSetupEvasiveConfig:
@@ -265,6 +282,18 @@ class TestSetupEvasiveConfig:
 
         assert not result.success
         assert "Failed to write" in result.error
+
+    def test_passes_log_file_to_render(self, mock_file_ops):
+        """Should pass log_file parameter to render."""
+        from nssec.modules.waf import ModSecurityInstaller
+        from nssec.modules.waf.config import EVASIVE_LOG_FILE
+
+        with patch("nssec.modules.waf.Path"):
+            installer = ModSecurityInstaller(mode="On")
+            installer.setup_evasive_config()
+
+        render_call = mock_file_ops["render"].call_args
+        assert EVASIVE_LOG_FILE in str(render_call)
 
 
 class TestSetEvasiveState:
@@ -362,37 +391,37 @@ class TestSetEvasiveState:
 
 
 class TestSetModeEvasiveIntegration:
-    """Tests for set_mode toggling mod_evasive alongside ModSecurity."""
+    """Tests for set_mode NOT toggling mod_evasive (decoupled)."""
 
-    def test_enable_mode_enables_evasive(self, mock_file_ops):
-        """Switching to On mode should enable mod_evasive."""
+    def test_enable_mode_does_not_toggle_evasive(self, mock_file_ops):
+        """Switching to On mode should NOT enable mod_evasive."""
         from nssec.modules.waf import ModSecurityInstaller
 
         mock_file_ops["read"].return_value = "SecRuleEngine DetectionOnly\n"
         with patch("nssec.modules.waf.package_installed", return_value=True), \
              patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)) as mock_run:
-            mock_file_ops["exists"].return_value = False  # evasive not enabled
+            mock_file_ops["exists"].return_value = False
             installer = ModSecurityInstaller()
             result = installer.set_mode("On")
 
         assert result.success
-        # Should have called a2enmod evasive
+        # Should NOT have called a2enmod/a2dismod evasive
         run_calls = [str(c) for c in mock_run.call_args_list]
-        assert any("a2enmod" in c and "evasive" in c for c in run_calls)
+        assert not any("evasive" in c for c in run_calls)
 
-    def test_detect_mode_disables_evasive(self, mock_file_ops):
-        """Switching to DetectionOnly should disable mod_evasive."""
+    def test_detect_mode_does_not_toggle_evasive(self, mock_file_ops):
+        """Switching to DetectionOnly should NOT disable mod_evasive."""
         from nssec.modules.waf import ModSecurityInstaller
 
         mock_file_ops["read"].return_value = "SecRuleEngine On\n"
         with patch("nssec.modules.waf.package_installed", return_value=True), \
              patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)) as mock_run:
-            mock_file_ops["exists"].return_value = True  # evasive currently enabled
+            mock_file_ops["exists"].return_value = True
             installer = ModSecurityInstaller()
             result = installer.set_mode("DetectionOnly")
 
         assert result.success
-        # Should have called a2dismod evasive
         run_calls = [str(c) for c in mock_run.call_args_list]
-        assert any("a2dismod" in c and "evasive" in c for c in run_calls)
-        assert "mod_evasive disabled" in result.message
+        assert not any("evasive" in c for c in run_calls)
+        # Message should NOT mention mod_evasive
+        assert "mod_evasive" not in result.message

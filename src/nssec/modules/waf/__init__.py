@@ -22,8 +22,11 @@ from nssec.modules.waf.config import (
     EVASIVE_CONF,
     EVASIVE_CONF_TEMPLATE,
     EVASIVE_LOAD,
+    EVASIVE_DEFAULT_PROFILE,
     EVASIVE_LOG_DIR,
+    EVASIVE_LOG_FILE,
     EVASIVE_PACKAGE,
+    EVASIVE_PROFILES,
     MODSEC_AUDIT_LOG,
     MODSEC_CONF,
     MODSEC_CONF_RECOMMENDED,
@@ -200,12 +203,7 @@ class ModSecurityInstaller:
         return StepResult(message=f"Installed: {', '.join(packages)}")
 
     def enable_modules(self) -> StepResult:
-        """Enable Apache security2 module and conditionally enable evasive.
-
-        mod_evasive is only enabled when the WAF mode is 'On' (blocking).
-        In DetectionOnly mode, evasive is left disabled to avoid blocking
-        traffic while the WAF is still being tuned.
-        """
+        """Enable Apache security2 module and conditionally enable evasive."""
         if file_exists(SECURITY2_LOAD):
             return StepResult(skipped=True, message="security2 module already enabled")
         if self.dry_run:
@@ -217,8 +215,7 @@ class ModSecurityInstaller:
                 success=False,
                 error=f"a2enmod security2 failed: {stderr}",
             )
-        # Only enable evasive in blocking mode; DetectionOnly = passive
-        if self.install_evasive and self.mode == "On":
+        if self.install_evasive:
             run_cmd(["a2enmod", "evasive"])
         return StepResult(message="Enabled security2 module")
 
@@ -248,26 +245,36 @@ class ModSecurityInstaller:
         msg = f"Configured ModSecurity (SecRuleEngine {self.mode})"
         return StepResult(message=msg)
 
-    def setup_evasive_config(self) -> StepResult:
-        """Write the mod_evasive configuration with tuned thresholds.
+    def setup_evasive_config(self, profile: str = EVASIVE_DEFAULT_PROFILE) -> StepResult:
+        """Write the mod_evasive configuration with the given threshold profile.
 
-        Deploys a baseline evasive.conf with thresholds tuned for
-        NetSapiens traffic patterns and whitelists for localhost/internal IPs.
+        Profiles:
+          - "standard" (default): high thresholds, only catches extreme floods.
+          - "strict": tighter thresholds tuned for NetSapiens traffic patterns.
         """
         if not self.install_evasive:
             return StepResult(skipped=True, message="Evasive installation skipped")
+        if profile not in EVASIVE_PROFILES:
+            return StepResult(success=False, error=f"Unknown evasive profile: {profile}")
         if self.dry_run:
-            return StepResult(message=f"Would write {EVASIVE_CONF}")
+            return StepResult(message=f"Would write {EVASIVE_CONF} (profile: {profile})")
 
         if file_exists(EVASIVE_CONF):
             backup_file(EVASIVE_CONF)
 
-        content = render(EVASIVE_CONF_TEMPLATE, log_dir=EVASIVE_LOG_DIR)
+        thresholds = EVASIVE_PROFILES[profile]
+        content = render(
+            EVASIVE_CONF_TEMPLATE,
+            profile=profile,
+            log_dir=EVASIVE_LOG_DIR,
+            log_file=EVASIVE_LOG_FILE,
+            **thresholds,
+        )
         if not write_file(EVASIVE_CONF, content):
             return StepResult(success=False, error=f"Failed to write {EVASIVE_CONF}")
 
         Path(EVASIVE_LOG_DIR).mkdir(parents=True, exist_ok=True)
-        return StepResult(message=f"Configured mod_evasive ({EVASIVE_CONF})")
+        return StepResult(message=f"Configured mod_evasive ({EVASIVE_CONF}, profile: {profile})")
 
     def set_evasive_state(self, enable: bool) -> StepResult:
         """Enable or disable the mod_evasive Apache module.
@@ -505,13 +512,12 @@ class ModSecurityInstaller:
         if pf.apache_installed and not pf.apache_running:
             result.warnings.append("Apache2 is installed but not running")
 
-        evasive_enable = self.mode == "On"
         steps = [
             ("Install packages", self.install_packages),
             ("Enable Apache modules", self.enable_modules),
             ("Configure ModSecurity", self.setup_config),
             ("Configure mod_evasive", self.setup_evasive_config),
-            ("Set mod_evasive state", lambda: self.set_evasive_state(evasive_enable)),
+            ("Enable mod_evasive", lambda: self.set_evasive_state(True)),
             ("Install OWASP CRS v4", self.install_crs_v4),
             ("Install NS exclusions", lambda: self.install_exclusions(admin_ips)),
             ("Update security2.conf", self.write_security2_conf),
@@ -536,11 +542,10 @@ class ModSecurityInstaller:
     # ------------------------------------------------------------------
 
     def set_mode(self, mode: str) -> StepResult:
-        """Change SecRuleEngine mode and toggle mod_evasive accordingly.
+        """Change SecRuleEngine mode.
 
-        When switching to 'On' (blocking), mod_evasive is enabled.
-        When switching to 'DetectionOnly', mod_evasive is disabled so it
-        does not block traffic while the WAF is still being tuned.
+        Only changes the ModSecurity engine mode. mod_evasive is managed
+        independently via 'nssec waf evasive enable/disable'.
         """
         content = read_file(MODSEC_CONF)
         if not content:
@@ -565,10 +570,6 @@ class ModSecurityInstaller:
         if not write_file(MODSEC_CONF, "\n".join(new_lines) + "\n"):
             return StepResult(success=False, error=f"Failed to write {MODSEC_CONF}")
 
-        # Toggle mod_evasive: enabled in blocking mode, disabled in detect mode
-        evasive_enable = mode == "On"
-        evasive_result = self.set_evasive_state(evasive_enable)
-
         stdout, stderr, rc = run_cmd(["apache2ctl", "configtest"])
         if rc != 0:
             self._rollback()
@@ -579,14 +580,5 @@ class ModSecurityInstaller:
         if rc != 0:
             return StepResult(success=False, error=f"Apache reload failed: {stderr}")
 
-        evasive_state = "enabled" if evasive_enable else "disabled"
-        evasive_note = ""
-        if evasive_result.skipped:
-            evasive_note = f" (mod_evasive: {evasive_result.message})"
-        elif evasive_result.success:
-            evasive_note = f" (mod_evasive {evasive_state})"
-        else:
-            evasive_note = f" (warning: mod_evasive toggle failed: {evasive_result.error})"
-
-        msg = f"SecRuleEngine set to {mode} and Apache reloaded{evasive_note}"
+        msg = f"SecRuleEngine set to {mode} and Apache reloaded"
         return StepResult(message=msg)

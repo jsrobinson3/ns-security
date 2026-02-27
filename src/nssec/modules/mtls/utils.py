@@ -163,3 +163,138 @@ def find_requireany_block(content: str) -> int:
     if abs_pos < len(content) and content[abs_pos] == "\n":
         abs_pos += 1
     return abs_pos
+
+
+def get_requireany_bounds(content: str) -> tuple[int, int]:
+    """Find the start and end positions of the <RequireAny> block in <Location /cfg>.
+
+    Returns (start_after_tag, end_before_closing_tag) or (-1, -1) if not found.
+    """
+    loc_start = content.find("<Location /cfg")
+    if loc_start == -1:
+        return -1, -1
+
+    loc_end = content.find("</Location>", loc_start)
+    if loc_end == -1:
+        return -1, -1
+
+    loc_content = content[loc_start:loc_end]
+    req_any_pos = loc_content.find("<RequireAny>")
+    if req_any_pos == -1:
+        return -1, -1
+
+    abs_start = loc_start + req_any_pos + len("<RequireAny>")
+    if abs_start < len(content) and content[abs_start] == "\n":
+        abs_start += 1
+
+    req_end_pos = loc_content.find("</RequireAny>", req_any_pos)
+    if req_end_pos == -1:
+        return -1, -1
+
+    abs_end = loc_start + req_end_pos
+    return abs_start, abs_end
+
+
+def get_all_requireany_ips(content: str) -> list[dict]:
+    """Parse all Require ip lines from the <RequireAny> block.
+
+    Returns a list of dicts with keys:
+        - ip: the IP address string
+        - managed: True if inside the NodePing managed section
+    """
+    block_start, block_end = get_requireany_bounds(content)
+    if block_start == -1:
+        return []
+
+    block = content[block_start:block_end]
+    managed_start = block.find(NODEPING_BEGIN_MARKER)
+    managed_end = block.find(NODEPING_END_MARKER)
+    has_managed = managed_start != -1 and managed_end != -1
+
+    results = []
+    offset = 0
+    for line in block.splitlines():
+        line_start = offset
+        offset += len(line) + 1  # +1 for newline
+        stripped = line.strip()
+        if not stripped.startswith("Require ip "):
+            continue
+        ip = stripped.replace("Require ip ", "").strip()
+        managed = has_managed and managed_start <= line_start < managed_end
+        results.append({"ip": ip, "managed": managed})
+
+    return results
+
+
+def add_ip_to_requireany(content: str, ip: str) -> tuple[str, str]:
+    """Add a Require ip line to the <RequireAny> block (outside managed section).
+
+    Returns (new_content, error). Error is empty on success.
+    """
+    block_start, block_end = get_requireany_bounds(content)
+    if block_start == -1:
+        return "", "Could not find <RequireAny> block in ndp_mtls.conf"
+
+    # Check if IP already exists
+    block = content[block_start:block_end]
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped == f"Require ip {ip}":
+            return "", f"IP {ip} is already in the allowlist"
+
+    # Insert before the closing </RequireAny> tag, outside any managed section
+    # Find the last non-managed Require ip line, or insert at the top
+    new_line = f"        Require ip {ip}\n"
+
+    # Insert at the beginning of the block (before any managed section)
+    managed_begin = block.find(NODEPING_BEGIN_MARKER)
+    if managed_begin != -1:
+        insert_pos = block_start + managed_begin
+        # Back up to find a good insertion point (before the blank line before managed section)
+        while insert_pos > block_start and content[insert_pos - 1] in ("\n", " "):
+            insert_pos -= 1
+        if insert_pos > block_start:
+            insert_pos += 1  # Keep one newline
+        new_content = content[:insert_pos] + new_line + content[insert_pos:]
+    else:
+        # No managed section — insert before </RequireAny>
+        new_content = content[:block_end] + new_line + content[block_end:]
+
+    return new_content, ""
+
+
+def remove_ip_from_requireany(content: str, ip: str) -> tuple[str, str]:
+    """Remove a Require ip line from the <RequireAny> block.
+
+    Only removes IPs outside the NodePing managed section.
+    Returns (new_content, error). Error is empty on success.
+    """
+    block_start, block_end = get_requireany_bounds(content)
+    if block_start == -1:
+        return "", "Could not find <RequireAny> block in ndp_mtls.conf"
+
+    block = content[block_start:block_end]
+    managed_start = block.find(NODEPING_BEGIN_MARKER)
+    managed_end = block.find(NODEPING_END_MARKER)
+    has_managed = managed_start != -1 and managed_end != -1
+
+    # Find the exact line to remove
+    offset = 0
+    for line in block.splitlines(keepends=True):
+        line_start = offset
+        offset += len(line)
+        stripped = line.strip()
+        if stripped == f"Require ip {ip}":
+            in_managed = has_managed and managed_start <= line_start < managed_end
+            if in_managed:
+                return "", (
+                    f"IP {ip} is managed by NodePing auto-updates. "
+                    "Use 'nssec mtls nodeping remove' to remove all NodePing IPs."
+                )
+            # Remove this line
+            abs_start = block_start + line_start
+            abs_end = block_start + line_start + len(line)
+            new_content = content[:abs_start] + content[abs_end:]
+            return new_content, ""
+
+    return "", f"IP {ip} not found in allowlist"
