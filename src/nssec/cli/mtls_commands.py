@@ -1,5 +1,7 @@
 """mTLS management CLI commands for nssec."""
 
+from __future__ import annotations
+
 import click
 
 from nssec.cli import console
