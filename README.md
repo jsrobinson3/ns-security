@@ -100,6 +100,43 @@ The WAF module includes:
 - NetSapiens exclusion rules for admin UI, ns-api, SiPbx, NqsProxy, and iNSight health checks
 - CRS tuning for allowed HTTP methods and content types used by NetSapiens
 
+### Path Restrictions (.htaccess)
+
+Restrict access to sensitive NetSapiens paths (admin UI, API, NDP, recording) using `.htaccess` IP allowlists:
+
+```bash
+# Show current restriction status
+nssec waf restrict show
+
+# Create .htaccess restrictions (interactive — shows existing IPs, asks to keep or overwrite)
+sudo nssec waf restrict init
+
+# Specify IPs directly
+sudo nssec waf restrict init --ip 74.219.23.50 --ip 65.110.48.0/22
+
+# Add/remove individual IPs
+sudo nssec waf restrict add 203.0.113.10
+sudo nssec waf restrict remove 203.0.113.10
+
+# Re-deploy after a NetSapiens package upgrade overwrites .htaccess files
+sudo nssec waf restrict reapply
+```
+
+The `init` command will:
+- Detect which paths apply to the current server type (Core, NDP, Recording, Combo)
+- Show any existing IPs from current `.htaccess` files and ask whether to keep or overwrite them
+- Always include `127.0.0.1` automatically
+- Save the IP list to `/etc/nssec/restrict-ips.json` so it survives NS package upgrades
+
+**Protected paths:**
+
+| Target | Path | Server Types |
+|--------|------|:------------:|
+| SiPbx Admin UI | `/usr/local/NetSapiens/SiPbx/html/SiPbx/` | Core, Combo |
+| ns-api | `/usr/local/NetSapiens/SiPbx/html/ns-api/` | Core, Combo |
+| NDP Endpoints | `/usr/local/NetSapiens/ndp/` | NDP, Combo |
+| LiCf Recording | `/usr/local/NetSapiens/LiCf/html/LiCf/` | Recording, Combo |
+
 ### mod_evasive (HTTP Flood Protection)
 
 mod_evasive is managed independently from the WAF and provides application-layer DDoS protection. It has **no detection-only mode** — when enabled it will block IPs that exceed request thresholds (HTTP 403).
@@ -169,6 +206,7 @@ These community projects provide additional NetSapiens security capabilities:
 - [x] ModSecurity installation and configuration with OWASP CRS
 - [x] NetSapiens-specific WAF exclusion rules
 - [x] ModSecurity WAF monitoring dashboard
+- [x] .htaccess IP restrictions for sensitive paths
 - [ ] MySQL password rotation across all NS services
 - [ ] Fail2ban SIP plugin for NetSapiens
 

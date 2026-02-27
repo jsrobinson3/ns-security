@@ -659,3 +659,359 @@ def waf_evasive_status():
         console.print(
             "\n  Enable with: [cyan]sudo nssec waf evasive enable[/cyan]"
         )
+
+
+# ─── RESTRICT SUBCOMMANDS ───
+
+
+def _validate_and_prompt_reload_for_restrict(yes):
+    """Run apache2ctl configtest then prompt for Apache reload."""
+    from nssec.modules.waf.utils import run_cmd
+
+    stdout, stderr, rc = run_cmd(["apache2ctl", "configtest"])
+    if rc != 0:
+        console.print(f"  [red]Error:[/red] Apache config test failed: {stderr or stdout}")
+        raise SystemExit(1)
+    console.print("  [green]Done:[/green] Apache config test passed")
+
+    console.print()
+    if yes or click.confirm("Reload Apache to apply changes?"):
+        _, stderr, rc = run_cmd(["systemctl", "reload", "apache2"])
+        if rc != 0:
+            console.print(f"  [red]Error:[/red] Apache reload failed: {stderr}")
+            raise SystemExit(1)
+        console.print("  [green]Done:[/green] Apache reloaded")
+    else:
+        console.print("[yellow]Skipped Apache reload. Run manually:[/yellow]")
+        console.print("  [cyan]sudo systemctl reload apache2[/cyan]")
+
+
+@waf.group("restrict", invoke_without_command=True)
+@click.pass_context
+def waf_restrict(ctx):
+    """Manage .htaccess IP restrictions for sensitive NetSapiens paths."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(waf_restrict_show)
+
+
+@waf_restrict.command("show")
+def waf_restrict_show():
+    """Show .htaccess restriction status for each protected path."""
+    from nssec.core.server_types import detect_server_type
+    from nssec.modules.waf.restrict import get_restrict_status, load_cached_ips
+
+    server_type = detect_server_type().value
+    statuses = get_restrict_status(server_type)
+
+    if not statuses:
+        console.print("[dim]No applicable restriction targets for this server type.[/dim]")
+        return
+
+    table = Table(title="Path Restrictions", show_header=True)
+    table.add_column("Target", style="cyan")
+    table.add_column("Path")
+    table.add_column("Status")
+    table.add_column("IPs", justify="right")
+
+    first_ips = None
+    first_ips_managed = False
+    for s in statuses:
+        if not s["exists"]:
+            status = "[red]missing[/red]"
+            ip_count = "-"
+        elif s["managed"]:
+            status = "[green]managed[/green]"
+            ip_count = str(len(s["ips"]))
+            if first_ips is None:
+                first_ips = s["ips"]
+                first_ips_managed = True
+        else:
+            status = "[yellow]unmanaged[/yellow]"
+            ip_count = str(len(s["ips"]))
+            if first_ips is None:
+                first_ips = s["ips"]
+
+        table.add_row(s["name"], s["path"], status, ip_count)
+
+    console.print(table)
+
+    if first_ips:
+        label = "Allowed IPs" if first_ips_managed else "Existing IPs (unmanaged)"
+        console.print(f"\n[bold]{label}[/bold] ({len(first_ips)}):")
+        for ip in first_ips:
+            console.print(f"  {ip}")
+
+    # Show cache status
+    cached = load_cached_ips()
+    if cached:
+        console.print(f"\n[bold]IP cache:[/bold] [green]{len(cached)} IP(s) saved[/green]")
+        console.print("  Run [cyan]nssec waf restrict reapply[/cyan] after NS upgrades to restore")
+    elif first_managed_ips:
+        console.print("\n[bold]IP cache:[/bold] [yellow]not saved[/yellow]")
+        console.print("  Run [cyan]nssec waf restrict init[/cyan] to save IPs for reapply after upgrades")
+
+
+@waf_restrict.command("init")
+@click.option("--ip", "ips", multiple=True, help="IP address or CIDR to allow (repeatable)")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_restrict_init(ips, dry_run, yes):
+    """Create .htaccess IP restrictions for sensitive NetSapiens paths.
+
+    Restricts access to admin UI, API, and other sensitive directories
+    using Apache 2.4 mod_authz_core (Require ip) directives.
+
+    \b
+    127.0.0.1 is always included automatically. You should also include:
+      - NetSapiens TAC support IPs
+      - Your admin office IP(s)
+
+    Use --ip to specify IPs, or omit to be prompted interactively.
+    If existing .htaccess files are found, you will be asked whether to
+    keep or overwrite the existing IPs.
+    """
+    import ipaddress
+
+    from nssec.core.ssh import is_root
+    from nssec.core.server_types import detect_server_type
+    from nssec.modules.waf.restrict import init_restrictions, collect_existing_ips
+
+    if not is_root():
+        console.print("[red]Error: Must run as root (sudo nssec waf restrict init)[/red]")
+        raise SystemExit(1)
+
+    server_type = detect_server_type().value
+
+    # Check for existing IPs on disk / in cache
+    existing_ips = collect_existing_ips(server_type)
+    merge_existing = True
+
+    if existing_ips and not dry_run:
+        console.print(f"[bold]Existing IPs found[/bold] ({len(existing_ips)}):")
+        for eip in existing_ips:
+            console.print(f"  {eip}")
+        console.print()
+        if not yes:
+            keep = click.confirm(
+                "Keep these existing IPs? (No = overwrite with only the IPs you provide)",
+                default=True,
+            )
+            merge_existing = keep
+        # When --yes is passed, default to keeping existing IPs
+
+    # Collect IPs
+    ip_list = list(ips)
+    if not ip_list:
+        console.print(
+            "[bold]Enter IP addresses to allow access[/bold] "
+            "(space or comma separated)."
+        )
+        console.print(
+            "  Include NetSapiens TAC IPs and your admin office IPs."
+        )
+        console.print("  127.0.0.1 is always included automatically.")
+        console.print()
+        raw = click.prompt("IPs to allow", default="")
+        # Split on commas and whitespace
+        ip_list = [s.strip() for s in raw.replace(",", " ").split() if s.strip()]
+
+    # Validate each IP
+    for ip_str in ip_list:
+        try:
+            if "/" in ip_str:
+                ipaddress.ip_network(ip_str, strict=False)
+            else:
+                ipaddress.ip_address(ip_str)
+        except ValueError:
+            console.print(f"[red]Error: Invalid IP address or CIDR: {ip_str}[/red]")
+            raise SystemExit(1)
+
+    console.print(f"\n[bold]Server type:[/bold] {server_type}")
+    console.print(f"[bold]IPs to allow:[/bold] 127.0.0.1 {' '.join(ip_list)}")
+    if existing_ips and merge_existing:
+        console.print(f"[bold]Keeping:[/bold] {len(existing_ips)} existing IP(s)")
+    elif existing_ips and not merge_existing:
+        console.print("[yellow]Overwriting existing IPs[/yellow]")
+    console.print()
+
+    if dry_run:
+        results = init_restrictions(server_type, ip_list, dry_run=True,
+                                    merge_existing=merge_existing)
+        for name, result in results:
+            label = f"[cyan]{name}:[/cyan] " if name else ""
+            console.print(f"  {label}{result.message}")
+        console.print("\n[yellow]Dry run — no changes made.[/yellow]")
+        return
+
+    if not yes and not click.confirm("Create .htaccess restrictions?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    results = init_restrictions(server_type, ip_list,
+                                merge_existing=merge_existing)
+    any_error = False
+    for name, result in results:
+        label = f"[cyan]{name}:[/cyan] " if name else ""
+        if result.skipped:
+            console.print(f"  [dim]Skipped:[/dim] {label}{result.message}")
+        elif result.success:
+            console.print(f"  [green]Done:[/green] {label}{result.message}")
+        else:
+            console.print(f"  [red]Error:[/red] {label}{result.error}")
+            any_error = True
+
+    if any_error:
+        raise SystemExit(1)
+
+    _validate_and_prompt_reload_for_restrict(yes)
+
+
+@waf_restrict.command("add")
+@click.argument("ip")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_restrict_add(ip, yes):
+    """Add an IP address to all managed .htaccess restriction files.
+
+    IP can be a single address (192.168.1.1) or CIDR notation (10.0.0.0/8).
+    """
+    import ipaddress
+
+    from nssec.core.ssh import is_root
+    from nssec.core.server_types import detect_server_type
+    from nssec.modules.waf.restrict import add_restricted_ip
+
+    if not is_root():
+        console.print("[red]Error: Must run as root (sudo nssec waf restrict add)[/red]")
+        raise SystemExit(1)
+
+    # Validate IP
+    try:
+        if "/" in ip:
+            ipaddress.ip_network(ip, strict=False)
+        else:
+            ipaddress.ip_address(ip)
+    except ValueError:
+        console.print(f"[red]Error: Invalid IP address or CIDR: {ip}[/red]")
+        raise SystemExit(1)
+
+    server_type = detect_server_type().value
+    console.print(f"Adding [cyan]{ip}[/cyan] to managed .htaccess files...")
+
+    results = add_restricted_ip(server_type, ip)
+    any_changed = False
+    for name, result in results:
+        label = f"[cyan]{name}:[/cyan] " if name else ""
+        if result.skipped:
+            console.print(f"  [dim]Skipped:[/dim] {label}{result.message}")
+        elif result.success:
+            console.print(f"  [green]Done:[/green] {label}{result.message}")
+            any_changed = True
+        else:
+            console.print(f"  [red]Error:[/red] {label}{result.error}")
+            raise SystemExit(1)
+
+    if any_changed:
+        _validate_and_prompt_reload_for_restrict(yes)
+
+
+@waf_restrict.command("remove")
+@click.argument("ip")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_restrict_remove(ip, yes):
+    """Remove an IP address from all managed .htaccess restriction files.
+
+    Cannot remove 127.0.0.1 (localhost is always required).
+    """
+    from nssec.core.ssh import is_root
+    from nssec.core.server_types import detect_server_type
+    from nssec.modules.waf.restrict import remove_restricted_ip
+
+    if not is_root():
+        console.print("[red]Error: Must run as root (sudo nssec waf restrict remove)[/red]")
+        raise SystemExit(1)
+
+    server_type = detect_server_type().value
+    console.print(f"Removing [cyan]{ip}[/cyan] from managed .htaccess files...")
+
+    results = remove_restricted_ip(server_type, ip)
+    any_changed = False
+    any_error = False
+    for name, result in results:
+        label = f"[cyan]{name}:[/cyan] " if name else ""
+        if not result.success and result.error:
+            console.print(f"  [red]Error:[/red] {label}{result.error}")
+            any_error = True
+        elif result.skipped:
+            console.print(f"  [dim]Skipped:[/dim] {label}{result.message}")
+        elif result.success:
+            console.print(f"  [green]Done:[/green] {label}{result.message}")
+            any_changed = True
+
+    if any_error:
+        raise SystemExit(1)
+
+    if any_changed:
+        _validate_and_prompt_reload_for_restrict(yes)
+
+
+@waf_restrict.command("reapply")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_restrict_reapply(dry_run, yes):
+    """Re-deploy .htaccess restrictions from cached IPs.
+
+    Use after a NetSapiens package upgrade overwrites .htaccess files.
+    Reads the saved IP list from /etc/nssec/restrict-ips.json and
+    re-creates all managed .htaccess files.
+    """
+    from nssec.core.ssh import is_root
+    from nssec.core.server_types import detect_server_type
+    from nssec.modules.waf.restrict import reapply_restrictions, load_cached_ips
+
+    if not is_root():
+        console.print("[red]Error: Must run as root (sudo nssec waf restrict reapply)[/red]")
+        raise SystemExit(1)
+
+    cached_ips = load_cached_ips()
+    if cached_ips:
+        console.print(f"[bold]Cached IPs[/bold] ({len(cached_ips)}):")
+        for ip in cached_ips:
+            console.print(f"  {ip}")
+        console.print()
+
+    server_type = detect_server_type().value
+
+    if dry_run:
+        results = reapply_restrictions(server_type, dry_run=True)
+        for name, result in results:
+            label = f"[cyan]{name}:[/cyan] " if name else ""
+            if result.skipped:
+                console.print(f"  [dim]Skipped:[/dim] {label}{result.message}")
+            else:
+                console.print(f"  {label}{result.message}")
+        console.print("\n[yellow]Dry run — no changes made.[/yellow]")
+        return
+
+    if not yes and not click.confirm("Re-deploy .htaccess restrictions from cache?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    results = reapply_restrictions(server_type)
+    any_error = False
+    any_changed = False
+    for name, result in results:
+        label = f"[cyan]{name}:[/cyan] " if name else ""
+        if result.skipped:
+            console.print(f"  [dim]Skipped:[/dim] {label}{result.message}")
+        elif result.success:
+            console.print(f"  [green]Done:[/green] {label}{result.message}")
+            any_changed = True
+        else:
+            console.print(f"  [red]Error:[/red] {label}{result.error}")
+            any_error = True
+
+    if any_error:
+        raise SystemExit(1)
+
+    if any_changed:
+        _validate_and_prompt_reload_for_restrict(yes)

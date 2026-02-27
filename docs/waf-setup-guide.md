@@ -525,6 +525,81 @@ sudo nssec waf evasive enable
 sudo nssec waf evasive disable
 ```
 
+## Path Restrictions (.htaccess)
+
+NetSapiens recommends restricting access to sensitive directories using `.htaccess` IP allowlists. This limits who can reach the admin login page, API, and provisioning endpoints.
+
+### Which paths to protect
+
+| Target | .htaccess Path | Server Types |
+|--------|---------------|:------------:|
+| SiPbx Admin UI | `/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess` | Core, Combo |
+| ns-api | `/usr/local/NetSapiens/SiPbx/html/ns-api/.htaccess` | Core, Combo |
+| NDP Endpoints | `/usr/local/NetSapiens/ndp/.htaccess` | NDP, Combo |
+| LiCf Recording | `/usr/local/NetSapiens/LiCf/html/LiCf/.htaccess` | Recording, Combo |
+
+### .htaccess format
+
+Each `.htaccess` file should follow this format:
+
+```apache
+<Files "adminlogin.php">
+    Order allow,deny
+    Allow from 127.0.0.1
+    Allow from X.X.X.X
+    Allow from 1.1.1.1
+    Allow from 2.2.2.2
+</Files>
+```
+
+**IPs to include:**
+- `127.0.0.1` — required for internal NS service communication
+- NetSapiens support IPs — so support can access your admin UI for support
+- Your admin office IP(s) — for your own management access
+
+### Using nssec
+
+```bash
+# Show current restriction status across all applicable paths
+nssec waf restrict show
+
+# Create/update .htaccess restrictions interactively
+# Shows existing IPs and asks whether to keep or overwrite them
+sudo nssec waf restrict init
+
+# Or specify IPs directly on the command line
+sudo nssec waf restrict init --ip 1.1.1.1 --ip 1.2.3.0/22
+
+# Add a single IP to all managed .htaccess files
+sudo nssec waf restrict add 1.1.1.1
+
+# Remove an IP (cannot remove 127.0.0.1)
+sudo nssec waf restrict remove 2.2.2.2
+
+# Re-deploy after a NetSapiens package upgrade overwrites .htaccess files
+sudo nssec waf restrict reapply
+```
+
+### Surviving NS package upgrades
+
+NetSapiens package upgrades can overwrite `.htaccess` files. The `nssec waf restrict init` command saves the IP list to `/etc/nssec/restrict-ips.json`. After an upgrade, run:
+
+```bash
+sudo nssec waf restrict reapply
+```
+
+This re-creates all `.htaccess` files from the cached IP list.
+
+### Manual configuration
+
+If configuring manually, create the `.htaccess` file in each applicable directory with the format shown above. Ensure `127.0.0.1` is always included.
+
+After creating or modifying `.htaccess` files, test and reload Apache:
+
+```bash
+sudo apache2ctl configtest && sudo systemctl reload apache2
+```
+
 ## File Summary
 
 | File | Purpose |
