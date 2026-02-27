@@ -235,11 +235,12 @@ def init_restrictions(
     """
     all_ips = ["127.0.0.1"] + [ip for ip in ips if ip != "127.0.0.1"]
 
-    # Merge IPs from cache (survives NS package upgrades)
+    # Merge IPs from all existing .htaccess files and cache so every target
+    # gets the full set (not just the IPs from its own file).
     if merge_existing:
-        for cached_ip in load_cached_ips():
-            if cached_ip not in all_ips:
-                all_ips.append(cached_ip)
+        for existing_ip in collect_existing_ips(server_type):
+            if existing_ip not in all_ips:
+                all_ips.append(existing_ip)
 
     targets = get_applicable_targets(server_type)
     results: list[tuple[str, StepResult]] = []
@@ -255,24 +256,16 @@ def init_restrictions(
         path = target["htaccess_path"]
         name = target["name"]
 
-        # Merge: preserve any existing IPs from the current file on disk
-        # (managed or unmanaged — handles both Require ip and Allow from)
-        merged_ips = list(all_ips)
-        if merge_existing and file_exists(path):
-            for existing_ip in parse_htaccess_ips(path):
-                if existing_ip not in merged_ips:
-                    merged_ips.append(existing_ip)
-
         if dry_run:
             results.append((name, StepResult(
-                message=f"Would create {path} with {len(merged_ips)} IP(s)",
+                message=f"Would create {path} with {len(all_ips)} IP(s)",
             )))
             continue
 
         if file_exists(path):
             backup_file(path)
 
-        content = _render_htaccess(target, merged_ips)
+        content = _render_htaccess(target, all_ips)
         if not write_file(path, content):
             results.append((name, StepResult(
                 success=False,
@@ -281,20 +274,12 @@ def init_restrictions(
             continue
 
         results.append((name, StepResult(
-            message=f"Created {path} with {len(merged_ips)} IP(s)",
+            message=f"Created {path} with {len(all_ips)} IP(s)",
         )))
 
     # Save the full IP set to cache for reapply after upgrades
     if not dry_run:
-        # Collect the union of all IPs written across targets
-        all_written_ips = list(all_ips)
-        for target in targets:
-            path = target["htaccess_path"]
-            if file_exists(path) and is_nssec_managed(path):
-                for ip in parse_htaccess_ips(path):
-                    if ip not in all_written_ips:
-                        all_written_ips.append(ip)
-        save_cached_ips(all_written_ips)
+        save_cached_ips(all_ips)
 
     return results
 

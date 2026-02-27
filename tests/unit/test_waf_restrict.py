@@ -245,12 +245,14 @@ class TestIsNssecManaged:
 class TestInitRestrictions:
     """Tests for init_restrictions function."""
 
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[])
+    @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
     @patch("nssec.modules.waf.restrict.file_exists", return_value=False)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_creates_htaccess_files(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write):
+    def test_creates_htaccess_files(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save, mock_collect):
         """Should create .htaccess files for applicable targets."""
         from nssec.modules.waf.restrict import init_restrictions
 
@@ -261,13 +263,14 @@ class TestInitRestrictions:
             assert result.success
             assert "Created" in result.message
 
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[])
+    @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
-    @patch("nssec.modules.waf.restrict.read_file", return_value="Allow from all")
     @patch("nssec.modules.waf.restrict.file_exists", return_value=True)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_overwrites_unmanaged_files(self, mock_render, mock_isdir, mock_exists, mock_read, mock_backup, mock_write):
+    def test_overwrites_unmanaged_files(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save, mock_collect):
         """Should overwrite existing unmanaged .htaccess files."""
         from nssec.modules.waf.restrict import init_restrictions
 
@@ -277,9 +280,10 @@ class TestInitRestrictions:
             assert result.success
             assert "Created" in result.message
 
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[])
     @patch("nssec.modules.waf.restrict.file_exists", return_value=False)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
-    def test_dry_run_does_not_write(self, mock_isdir, mock_exists):
+    def test_dry_run_does_not_write(self, mock_isdir, mock_exists, mock_collect):
         """Should not write files in dry run mode."""
         from nssec.modules.waf.restrict import init_restrictions
 
@@ -295,18 +299,21 @@ class TestInitRestrictions:
         """Should return skip result when no targets apply."""
         from nssec.modules.waf.restrict import init_restrictions
 
-        with patch("nssec.modules.waf.restrict.is_directory", return_value=False):
+        with patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[]), \
+             patch("nssec.modules.waf.restrict.is_directory", return_value=False):
             results = init_restrictions("core", ["192.168.1.100"])
 
         assert len(results) == 1
         assert results[0][1].skipped
 
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[])
+    @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
     @patch("nssec.modules.waf.restrict.file_exists", return_value=False)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_always_includes_localhost(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write):
+    def test_always_includes_localhost(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save, mock_collect):
         """Should always include 127.0.0.1 in rendered IPs."""
         from nssec.modules.waf.restrict import init_restrictions
 
@@ -317,92 +324,63 @@ class TestInitRestrictions:
             ips = call_args.kwargs.get("ips", call_args[1].get("ips", []))
             assert "127.0.0.1" in ips
 
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=["10.0.0.5"])
+    @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
+    @patch("nssec.modules.waf.restrict.file_exists", return_value=True)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_merges_existing_ips_from_managed_file(self, mock_render, mock_isdir, mock_backup, mock_write):
-        """Should merge existing IPs from a previously managed file."""
+    def test_merges_existing_ips_from_all_targets(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save, mock_collect):
+        """Should merge existing IPs from all targets into every file."""
         from nssec.modules.waf.restrict import init_restrictions
-        from nssec.modules.waf.config import RESTRICT_MANAGED_MARKER
 
-        managed_content = f"{RESTRICT_MANAGED_MARKER}\nRequire ip 127.0.0.1\nRequire ip 10.0.0.5\n"
-
-        with patch("nssec.modules.waf.restrict.file_exists", return_value=True), \
-             patch("nssec.modules.waf.restrict.read_file", return_value=managed_content):
-            results = init_restrictions("core", ["192.168.1.100"])
+        results = init_restrictions("core", ["192.168.1.100"])
 
         for name, result in results:
             assert result.success
             assert "Created" in result.message
 
-        # Check that render was called with merged IPs (new + existing)
+        # Every target gets the full merged set
         for call_args in mock_render.call_args_list:
             ips = call_args.kwargs.get("ips", call_args[1].get("ips", []))
             assert "127.0.0.1" in ips
             assert "192.168.1.100" in ips
             assert "10.0.0.5" in ips
 
-    @patch("nssec.modules.waf.restrict.write_file", return_value=True)
-    @patch("nssec.modules.waf.restrict.backup_file")
-    @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
-    @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_merges_legacy_ips_from_unmanaged_file(self, mock_render, mock_isdir, mock_backup, mock_write):
-        """Should merge IPs from unmanaged file using legacy Allow from syntax."""
-        from nssec.modules.waf.restrict import init_restrictions
-
-        legacy_content = "Order deny,allow\nDeny from all\nAllow from 10.0.0.5\nAllow from 172.16.0.1\n"
-
-        with patch("nssec.modules.waf.restrict.file_exists", return_value=True), \
-             patch("nssec.modules.waf.restrict.read_file", return_value=legacy_content):
-            results = init_restrictions("core", ["192.168.1.100"])
-
-        for name, result in results:
-            assert result.success
-            assert "Created" in result.message
-
-        # Check that render was called with merged IPs (new + legacy existing)
-        for call_args in mock_render.call_args_list:
-            ips = call_args.kwargs.get("ips", call_args[1].get("ips", []))
-            assert "127.0.0.1" in ips
-            assert "192.168.1.100" in ips
-            assert "10.0.0.5" in ips
-            assert "172.16.0.1" in ips
-
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=["10.0.0.5"])
     @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
     @patch("nssec.modules.waf.restrict.file_exists", return_value=False)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_merges_ips_from_cache(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save):
+    def test_merges_ips_from_cache(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save, mock_collect):
         """Should merge IPs from cache file into new .htaccess files."""
         from nssec.modules.waf.restrict import init_restrictions
 
-        cached = json.dumps({"ips": ["127.0.0.1", "10.0.0.5"]})
-        with patch("nssec.modules.waf.restrict.read_file", return_value=cached):
-            results = init_restrictions("core", ["192.168.1.100"])
+        results = init_restrictions("core", ["192.168.1.100"])
 
         for name, result in results:
             assert result.success
 
-        # Check that render was called with cached IP merged in
+        # Check that render was called with collected IP merged in
         for call_args in mock_render.call_args_list:
             ips = call_args.kwargs.get("ips", call_args[1].get("ips", []))
             assert "10.0.0.5" in ips
             assert "192.168.1.100" in ips
 
+    @patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[])
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
     @patch("nssec.modules.waf.restrict.file_exists", return_value=False)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_saves_ips_to_cache_after_init(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write):
+    def test_saves_ips_to_cache_after_init(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_collect):
         """Should save IPs to cache file after successful init."""
         from nssec.modules.waf.restrict import init_restrictions
 
-        with patch("nssec.modules.waf.restrict.read_file", return_value=None), \
-             patch("nssec.modules.waf.restrict.save_cached_ips") as mock_save:
+        with patch("nssec.modules.waf.restrict.save_cached_ips") as mock_save:
             init_restrictions("core", ["192.168.1.100"])
 
         mock_save.assert_called_once()
@@ -467,50 +445,46 @@ class TestCollectExistingIps:
 class TestInitRestrictionsNoMerge:
     """Tests for init_restrictions with merge_existing=False."""
 
+    @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
+    @patch("nssec.modules.waf.restrict.file_exists", return_value=True)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_does_not_merge_existing_when_disabled(self, mock_render, mock_isdir, mock_backup, mock_write):
+    def test_does_not_merge_existing_when_disabled(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save):
         """Should not merge existing IPs when merge_existing=False."""
         from nssec.modules.waf.restrict import init_restrictions
-        from nssec.modules.waf.config import RESTRICT_MANAGED_MARKER
 
-        managed_content = f"{RESTRICT_MANAGED_MARKER}\nRequire ip 127.0.0.1\nRequire ip 10.0.0.5\n"
-
-        with patch("nssec.modules.waf.restrict.file_exists", return_value=True), \
-             patch("nssec.modules.waf.restrict.read_file", return_value=managed_content):
-            results = init_restrictions("core", ["192.168.1.100"],
-                                        merge_existing=False)
+        results = init_restrictions("core", ["192.168.1.100"],
+                                    merge_existing=False)
 
         for name, result in results:
             assert result.success
 
-        # Render should NOT include the existing 10.0.0.5
+        # Render should only include provided IPs + localhost
         for call_args in mock_render.call_args_list:
             ips = call_args.kwargs.get("ips", call_args[1].get("ips", []))
             assert "127.0.0.1" in ips
             assert "192.168.1.100" in ips
-            assert "10.0.0.5" not in ips
+            assert len(ips) == 2
 
+    @patch("nssec.modules.waf.restrict.save_cached_ips")
     @patch("nssec.modules.waf.restrict.write_file", return_value=True)
     @patch("nssec.modules.waf.restrict.backup_file")
     @patch("nssec.modules.waf.restrict.file_exists", return_value=False)
     @patch("nssec.modules.waf.restrict.is_directory", return_value=True)
     @patch("nssec.modules.waf.restrict.render", return_value="rendered")
-    def test_does_not_merge_cache_when_disabled(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write):
+    def test_does_not_merge_cache_when_disabled(self, mock_render, mock_isdir, mock_exists, mock_backup, mock_write, mock_save):
         """Should not merge cache IPs when merge_existing=False."""
         from nssec.modules.waf.restrict import init_restrictions
 
-        cached = json.dumps({"ips": ["127.0.0.1", "10.0.0.5"]})
-        with patch("nssec.modules.waf.restrict.read_file", return_value=cached), \
-             patch("nssec.modules.waf.restrict.save_cached_ips"):
-            results = init_restrictions("core", ["192.168.1.100"],
-                                        merge_existing=False)
+        results = init_restrictions("core", ["192.168.1.100"],
+                                    merge_existing=False)
 
+        # Render should only include provided IPs + localhost
         for call_args in mock_render.call_args_list:
             ips = call_args.kwargs.get("ips", call_args[1].get("ips", []))
-            assert "10.0.0.5" not in ips
+            assert len(ips) == 2
             assert "192.168.1.100" in ips
 
 
