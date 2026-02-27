@@ -746,7 +746,7 @@ def waf_restrict_show():
     if cached:
         console.print(f"\n[bold]IP cache:[/bold] [green]{len(cached)} IP(s) saved[/green]")
         console.print("  Run [cyan]nssec waf restrict reapply[/cyan] after NS upgrades to restore")
-    elif first_managed_ips:
+    elif first_ips_managed:
         console.print("\n[bold]IP cache:[/bold] [yellow]not saved[/yellow]")
         console.print("  Run [cyan]nssec waf restrict init[/cyan] to save IPs for reapply after upgrades")
 
