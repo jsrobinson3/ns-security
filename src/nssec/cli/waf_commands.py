@@ -116,7 +116,29 @@ def _build_status_table(status):
     table.add_column("Property", style="cyan")
     table.add_column("Value")
 
-    table.add_row("ModSecurity installed", _yn(status.modsec_installed))
+    if status.apache_version:
+        apache_val = f"v{status.apache_version}"
+        if status.apache_ppa:
+            apache_val += " [cyan](ondrej PPA)[/cyan]"
+        table.add_row("Apache", apache_val)
+
+    if status.modsec_installed and status.modsec_version:
+        from nssec.modules.waf.utils import version_gte
+
+        ver_str = f"v{status.modsec_version}"
+        if not version_gte(status.modsec_version, "2.9.6") and status.disabled_crs_rules > 0:
+            table.add_row(
+                "ModSecurity installed",
+                f"[yellow]yes ({ver_str} — {status.disabled_crs_rules} CRS rule(s) disabled, "
+                f"run [cyan]nssec waf update[/cyan] to upgrade)[/yellow]",
+            )
+        else:
+            table.add_row(
+                "ModSecurity installed",
+                f"[green]yes ({ver_str})[/green]",
+            )
+    else:
+        table.add_row("ModSecurity installed", _yn(status.modsec_installed))
     table.add_row("Module enabled", _yn(status.modsec_enabled))
 
     if status.modsec_mode:
@@ -130,6 +152,10 @@ def _build_status_table(status):
         table.add_row("OWASP CRS", f"[green]{crs}[/green]")
         if status.crs_path:
             table.add_row("CRS path", status.crs_path)
+        setup_val = _yn(status.crs_setup_present)
+        if not status.crs_setup_present:
+            setup_val += " [red](rule 901001 will flag all traffic! run [cyan]nssec waf init[/cyan])[/red]"
+        table.add_row("crs-setup.conf", setup_val)
     else:
         table.add_row("OWASP CRS", "[red]not installed[/red]")
 
@@ -139,7 +165,35 @@ def _build_status_table(status):
     else:
         table.add_row("mod_evasive", "[dim]not installed[/dim]")
 
-    table.add_row("NS exclusions", _yn(status.exclusions_present, "yellow"))
+    # NS exclusions detail
+    if status.exclusions_present:
+        if not status.exclusions_included:
+            excl_val = (
+                "[red]not loaded[/red] — security2.conf does not include exclusions file, "
+                "run [cyan]nssec waf init[/cyan] to fix"
+            )
+        elif not status.crs_path_valid:
+            excl_val = (
+                "[yellow]loaded but ineffective[/yellow] — "
+                "CRS misconfigured (missing crs-setup.conf), "
+                "run [cyan]nssec waf init[/cyan] to fix"
+            )
+        elif not status.exclusions_current:
+            v = status.exclusions_version or "unknown"
+            excl_val = (
+                f"[yellow]outdated (v{v})[/yellow] — "
+                "run [cyan]nssec waf update-exclusions[/cyan]"
+            )
+        else:
+            excl_val = "[green]active (v{})[/green]".format(status.exclusions_version)
+        table.add_row("NS exclusions", excl_val)
+        if status.exclusions_admin_ips:
+            table.add_row("  Admin IPs", str(status.exclusions_admin_ips))
+        if status.exclusions_nodeping_ips:
+            table.add_row("  NodePing IPs", str(status.exclusions_nodeping_ips))
+    else:
+        table.add_row("NS exclusions", "[yellow]not deployed[/yellow]")
+
     table.add_row("Audit log", _yn(status.audit_log_exists, "dim"))
     return table
 
@@ -194,8 +248,17 @@ def waf_init(mode, skip_evasive, yes, dry_run):
         console.print("[yellow]Aborted.[/yellow]")
         return
 
+    # Fetch NodePing monitoring probe IPs for WAF allowlisting
+    from nssec.modules.waf import fetch_nodeping_probe_ips
+
+    nodeping_ips, np_err = fetch_nodeping_probe_ips()
+    if np_err:
+        console.print(f"  [yellow]Warning:[/yellow] {np_err}")
+    elif nodeping_ips:
+        console.print(f"  Fetched {len(nodeping_ips)} NodePing probe IPs for WAF allowlisting")
+
     console.print()
-    result = installer.run()
+    result = installer.run(nodeping_ips=nodeping_ips)
     _print_install_results(result)
 
     if not result.success:
@@ -348,7 +411,16 @@ def waf_update_exclusions(yes, dry_run):
 
     console.print("[bold]Updating NetSapiens WAF exclusions...[/bold]")
 
-    result = installer.install_exclusions()
+    # Fetch NodePing monitoring probe IPs for WAF allowlisting
+    from nssec.modules.waf import fetch_nodeping_probe_ips
+
+    nodeping_ips, np_err = fetch_nodeping_probe_ips()
+    if np_err:
+        console.print(f"  [yellow]Warning:[/yellow] {np_err}")
+    elif nodeping_ips:
+        console.print(f"  Fetched {len(nodeping_ips)} NodePing probe IPs for WAF allowlisting")
+
+    result = installer.install_exclusions(nodeping_ips=nodeping_ips)
     if not result.success:
         console.print(f"  [red]Error:[/red] {result.error}")
         raise SystemExit(1)
@@ -381,6 +453,102 @@ def waf_status():
         console.print("\n[bold]Recent audit log entries:[/bold]")
         for line in status.recent_log_lines:
             console.print(f"  [dim]{line}[/dim]")
+
+
+@waf.command("update")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_update(yes):
+    """Check ModSecurity version and re-enable CRS rules after upgrade.
+
+    \b
+    If ModSecurity < 2.9.6, shows instructions for adding the Digitalwave
+    ModSecurity repository to get a compatible version.
+
+    \b
+    If ModSecurity >= 2.9.6 (user already upgraded), re-enables any CRS
+    rules that were disabled during init and validates the Apache config.
+    """
+    from nssec.modules.waf import ModSecurityInstaller
+    from nssec.modules.waf.utils import detect_modsec_version, version_gte
+    from nssec.modules.waf.config import (
+        CRS_INSTALL_DIR,
+        DIGITALWAVE_KEY_URL,
+        DIGITALWAVE_KEYRING,
+        DIGITALWAVE_LIST,
+        DIGITALWAVE_REPO_URL,
+    )
+
+    installer = ModSecurityInstaller()
+    pf = installer.preflight()
+    _require_root_and_modsec(pf, "sudo nssec waf update")
+
+    current_ver = detect_modsec_version()
+    console.print(f"[bold]Current ModSecurity version:[/bold] {current_ver or 'unknown'}")
+
+    if not version_gte(current_ver, "2.9.6"):
+        console.print()
+        console.print(
+            "[yellow]ModSecurity < 2.9.6 — some CRS v4 rules are disabled.[/yellow]"
+        )
+        console.print(
+            "Ubuntu 22.04 ships ModSecurity 2.9.5 which lacks support for "
+            "multipart rules introduced in 2.9.6."
+        )
+        console.print()
+        console.print("[bold]To upgrade, add the Digitalwave ModSecurity repository:[/bold]")
+        console.print()
+        keyring = DIGITALWAVE_KEYRING
+        console.print(
+            f"  [cyan]curl -fsSL {DIGITALWAVE_KEY_URL} "
+            f"| sudo gpg --dearmor -o {keyring}[/cyan]"
+        )
+        console.print()
+        # Escape square brackets so Rich doesn't treat [signed-by=...] as markup
+        signed = f"\\[signed-by={keyring}]"
+        repo = DIGITALWAVE_REPO_URL
+        lst = DIGITALWAVE_LIST
+        console.print(
+            f'  [cyan]echo "deb {signed} {repo} $(lsb_release -sc) main" '
+            f"| sudo tee {lst}[/cyan]"
+        )
+        console.print(
+            f'  [cyan]echo "deb {signed} {repo} $(lsb_release -sc)-backports main" '
+            f"| sudo tee -a {lst}[/cyan]"
+        )
+        console.print()
+        console.print(
+            "  [cyan]sudo apt-get update[/cyan]"
+        )
+        console.print(
+            "  [cyan]sudo apt-get install -t $(lsb_release -sc)-backports "
+            "libapache2-mod-security2[/cyan]"
+        )
+        console.print()
+        console.print(
+            "After upgrading, run [cyan]nssec waf update[/cyan] again to "
+            "re-enable the disabled CRS rules."
+        )
+        return
+
+    # ModSec >= 2.9.6 — re-enable any disabled rules
+    crs_path = pf.crs_path or CRS_INSTALL_DIR
+    reenabled = installer._reenable_crs_rules(crs_path)
+    if not reenabled:
+        console.print("[green]ModSecurity >= 2.9.6 and all CRS rules are active. Nothing to do.[/green]")
+        return
+
+    console.print(
+        f"  [green]Done:[/green] Re-enabled {len(reenabled)} CRS rule(s): "
+        + ", ".join(reenabled)
+    )
+
+    val = installer.validate_config()
+    if not val.success:
+        console.print(f"  [red]Error:[/red] {val.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {val.message}")
+
+    _prompt_and_reload_apache(installer, yes)
 
 
 @waf.group("allowlist", invoke_without_command=True)

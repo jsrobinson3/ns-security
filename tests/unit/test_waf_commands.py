@@ -324,3 +324,165 @@ class TestWafEvasiveStatus:
 
         assert result.exit_code == 0
         assert "mod_evasive Status" in result.output
+
+
+class TestWafInitNodeping:
+    """Tests for waf init command with NodePing IP fetching."""
+
+    def test_fetches_nodeping_ips_during_init(self, runner, mock_installer):
+        """Should fetch NodePing IPs and pass to run()."""
+        pf = mock_installer.preflight.return_value
+        pf.can_proceed = True
+        pf.crs_installed = True
+        pf.crs_version = "4.8.0"
+        pf.warnings = []
+
+        run_result = MagicMock()
+        run_result.success = True
+        run_result.steps_completed = ["Done"]
+        run_result.steps_skipped = []
+        run_result.warnings = []
+        run_result.errors = []
+        mock_installer.run.return_value = run_result
+        mock_installer.reload_apache.return_value = MagicMock(success=True, message="Reloaded")
+
+        with patch(
+            "nssec.modules.waf.fetch_nodeping_probe_ips",
+            return_value=(["52.71.195.82"], ""),
+        ):
+            result = runner.invoke(waf, ["init", "-y"])
+
+        assert result.exit_code == 0
+        # Verify NodePing IPs were passed to run()
+        mock_installer.run.assert_called_once()
+        call_kwargs = mock_installer.run.call_args
+        assert call_kwargs.kwargs.get("nodeping_ips") == ["52.71.195.82"]
+
+    def test_warns_on_nodeping_fetch_failure(self, runner, mock_installer):
+        """Should warn but continue when NodePing fetch fails."""
+        pf = mock_installer.preflight.return_value
+        pf.can_proceed = True
+        pf.crs_installed = True
+        pf.crs_version = "4.8.0"
+        pf.warnings = []
+
+        run_result = MagicMock()
+        run_result.success = True
+        run_result.steps_completed = ["Done"]
+        run_result.steps_skipped = []
+        run_result.warnings = []
+        run_result.errors = []
+        mock_installer.run.return_value = run_result
+        mock_installer.reload_apache.return_value = MagicMock(success=True, message="Reloaded")
+
+        with patch(
+            "nssec.modules.waf.fetch_nodeping_probe_ips",
+            return_value=([], "Connection error"),
+        ):
+            result = runner.invoke(waf, ["init", "-y"])
+
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+
+
+class TestWafUpdateExclusionsNodeping:
+    """Tests for waf update-exclusions command with NodePing IPs."""
+
+    def test_fetches_nodeping_ips_during_update(self, runner, mock_installer):
+        """Should fetch NodePing IPs and pass to install_exclusions()."""
+        step = MagicMock()
+        step.success = True
+        step.message = "Updated"
+        mock_installer.install_exclusions.return_value = step
+        mock_installer.validate_config.return_value = step
+        mock_installer.reload_apache.return_value = step
+
+        with patch(
+            "nssec.modules.waf.fetch_nodeping_probe_ips",
+            return_value=(["52.71.195.82", "3.21.118.250"], ""),
+        ):
+            result = runner.invoke(waf, ["update-exclusions", "-y"])
+
+        assert result.exit_code == 0
+        mock_installer.install_exclusions.assert_called_once()
+        call_kwargs = mock_installer.install_exclusions.call_args
+        assert call_kwargs.kwargs.get("nodeping_ips") == ["52.71.195.82", "3.21.118.250"]
+
+    def test_warns_on_nodeping_fetch_failure_update(self, runner, mock_installer):
+        """Should warn but continue when NodePing fetch fails during update."""
+        step = MagicMock()
+        step.success = True
+        step.message = "Updated"
+        mock_installer.install_exclusions.return_value = step
+        mock_installer.validate_config.return_value = step
+        mock_installer.reload_apache.return_value = step
+
+        with patch(
+            "nssec.modules.waf.fetch_nodeping_probe_ips",
+            return_value=([], "Timeout"),
+        ):
+            result = runner.invoke(waf, ["update-exclusions", "-y"])
+
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+
+
+class TestWafUpdate:
+    """Tests for waf update command."""
+
+    def test_requires_root(self, runner, mock_installer):
+        """Should fail if not root."""
+        mock_installer.preflight.return_value.is_root = False
+
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.5"), \
+             patch("nssec.modules.waf.utils.version_gte", return_value=False):
+            result = runner.invoke(waf, ["update", "-y"])
+
+        assert result.exit_code == 1
+        assert "root" in result.output.lower()
+
+    def test_shows_instructions_when_old(self, runner, mock_installer):
+        """Should show Digitalwave repo instructions when ModSec < 2.9.6."""
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.5"), \
+             patch("nssec.modules.waf.utils.version_gte", return_value=False):
+            result = runner.invoke(waf, ["update", "-y"])
+
+        assert result.exit_code == 0
+        assert "Digitalwave" in result.output
+        assert "signed-by=" in result.output
+        assert "apt-get update" in result.output
+
+    def test_nothing_to_do_when_current_no_disabled(self, runner, mock_installer):
+        """Should report nothing to do when >= 2.9.6 and no disabled rules."""
+        mock_installer._reenable_crs_rules.return_value = []
+        mock_installer.preflight.return_value.crs_path = "/etc/modsecurity/crs"
+
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.7"), \
+             patch("nssec.modules.waf.utils.version_gte", return_value=True):
+            result = runner.invoke(waf, ["update", "-y"])
+
+        assert result.exit_code == 0
+        assert "Nothing to do" in result.output
+
+    def test_reenables_rules_after_upgrade(self, runner, mock_installer):
+        """Should re-enable disabled rules when ModSec >= 2.9.6."""
+        mock_installer._reenable_crs_rules.return_value = ["REQUEST-922-MULTIPART-ATTACK.conf"]
+        mock_installer.preflight.return_value.crs_path = "/etc/modsecurity/crs"
+
+        validate_result = MagicMock()
+        validate_result.success = True
+        validate_result.message = "Apache config test passed"
+        mock_installer.validate_config.return_value = validate_result
+
+        reload_result = MagicMock()
+        reload_result.success = True
+        reload_result.message = "Apache reloaded"
+        mock_installer.reload_apache.return_value = reload_result
+
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.7"), \
+             patch("nssec.modules.waf.utils.version_gte", return_value=True):
+            result = runner.invoke(waf, ["update", "-y"])
+
+        assert result.exit_code == 0
+        mock_installer._reenable_crs_rules.assert_called_once()
+        assert "Re-enabled" in result.output

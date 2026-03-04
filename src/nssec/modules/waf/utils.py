@@ -68,6 +68,51 @@ def render(template_str: str, **kwargs: object) -> str:
     )
 
 
+def _parse_version(s: str) -> tuple[int, ...]:
+    """Parse a version string into an int tuple, stripping pre-release suffixes.
+
+    Handles versions like "2.9.13~pre", "2.9.5-1", "2.9.6".
+    """
+    import re
+
+    parts = []
+    for component in s.split("."):
+        # Extract leading digits, ignore suffixes like ~pre, -rc1, etc.
+        m = re.match(r"(\d+)", component)
+        if m:
+            parts.append(int(m.group(1)))
+        else:
+            raise ValueError(f"Cannot parse version component: {component}")
+    return tuple(parts)
+
+
+def version_gte(version_str: str | None, target: str) -> bool:
+    """Compare version strings using tuple comparison.
+
+    Returns True if version_str >= target. Returns False on parse errors.
+    Handles pre-release suffixes like ~pre, -rc1, etc.
+    """
+    try:
+        v = _parse_version(version_str)
+        t = _parse_version(target)
+        return v >= t
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def detect_modsec_version() -> str | None:
+    """Detect installed ModSecurity version from dpkg metadata.
+
+    Returns version string (e.g. "2.9.5") or None if not installed.
+    """
+    stdout, _, rc = run_cmd(["dpkg-query", "-W", "-f=${Version}", "libapache2-mod-security2"])
+    if rc != 0 or not stdout.strip():
+        return None
+    # dpkg version may have suffixes like "2.9.5-3" — keep only the upstream part
+    version = stdout.strip().split("-")[0]
+    return version
+
+
 def detect_modsec_mode(config_paths: list[str]) -> str | None:
     """Read SecRuleEngine mode from the first config that has it."""
     for config_path in config_paths:
@@ -105,10 +150,30 @@ def parse_security2_conf(path: str) -> tuple[bool, bool]:
 def append_crs_to_security2(crs_path: str) -> bool:
     """Append CRS IncludeOptional directives to an existing security2.conf.
 
+    Comments out any existing CRS load lines (e.g., apt v3
+    ``IncludeOptional /usr/share/modsecurity-crs/*.load``) to prevent
+    dual-loading when nssec manages CRS v4 separately.
+
     Returns True on success, False on write failure.
     """
     sec2_content = read_file(SECURITY2_CONF) or ""
     backup_file(SECURITY2_CONF)
+
+    # Comment out old CRS include lines to prevent dual-loading.
+    new_lines = []
+    for line in sec2_content.splitlines():
+        stripped = line.strip()
+        if (
+            not stripped.startswith("#")
+            and "IncludeOptional" in stripped
+            and "modsecurity-crs" in stripped
+        ):
+            new_lines.append("    # Disabled by nssec (CRS v4 managed below)")
+            new_lines.append(f"    # {stripped}")
+        else:
+            new_lines.append(line)
+    sec2_content = "\n".join(new_lines)
+
     crs_block = (
         f"\n    # OWASP CRS (added by nssec)\n"
         f"    IncludeOptional {crs_path}/crs-setup.conf\n"

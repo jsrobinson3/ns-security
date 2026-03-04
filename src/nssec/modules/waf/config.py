@@ -34,6 +34,16 @@ EVASIVE_DEFAULT_PROFILE = "standard"
 
 # CRS version pinning (used when apt ships v3.x)
 PINNED_CRS_VERSION = "4.8.0"
+
+# CRS rule files that require ModSecurity >= 2.9.6 (MULTIPART_PART_HEADERS).
+# These are renamed to .conf.disabled on older ModSecurity versions.
+CRS_RULES_REQUIRE_296 = [
+    "REQUEST-922-MULTIPART-ATTACK.conf",
+]
+DIGITALWAVE_REPO_URL = "http://modsecurity.digitalwave.hu/ubuntu/"
+DIGITALWAVE_KEY_URL = "https://modsecurity.digitalwave.hu/archive.key"
+DIGITALWAVE_KEYRING = "/usr/share/keyrings/digitalwave-modsecurity.gpg"
+DIGITALWAVE_LIST = "/etc/apt/sources.list.d/digitalwave-modsecurity.list"
 CRS_GITHUB_DOWNLOAD = (
     f"https://github.com/coreruleset/coreruleset/archive/refs/tags/v{PINNED_CRS_VERSION}.tar.gz"
 )
@@ -50,15 +60,19 @@ MODSEC_AUDIT_LOG = "/var/log/apache2/modsec_audit.log"
 MODSEC_TMP_DIR = "/tmp/"
 MODSEC_DATA_DIR = "/tmp/"
 
-# CRS locations to check (apt-installed or manual)
+# CRS locations to check — nssec-managed path first so v4 is preferred
+# over the apt v3 package when both exist.
 CRS_SEARCH_PATHS = [
-    "/usr/share/modsecurity-crs",
     "/etc/modsecurity/crs",
+    "/usr/share/modsecurity-crs",
     "/etc/apache2/modsecurity-crs",
 ]
 
 # Backup suffix for nssec-managed files
 BACKUP_SUFFIX = ".bak.nssec"
+
+# Exclusions template version — human-readable label for the template revision.
+NS_EXCLUSIONS_VERSION = "2"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -188,6 +202,8 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # NetSapiens-specific ModSecurity Exclusions
 # Managed by nssec
 # Generated: {{ timestamp }}
+# nssec-exclusions-version: {{ version }}
+# nssec-exclusions-hash: {{ template_hash }}
 #
 # These rules prevent false positives on the NetSapiens management UI
 # and API endpoints while keeping CRS protection active for everything else.
@@ -270,6 +286,20 @@ SecRule REMOTE_ADDR "@ipMatch 127.0.0.1" \\
 {% for ip in admin_ips %}
 SecRule REMOTE_ADDR "@ipMatch {{ ip }}" \\
     "id:{{ 1000100 + loop.index }},\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveByTag=OWASP_CRS"
+{% endfor %}
+{% endif %}
+
+{% if nodeping_ips %}
+# ---- NodePing monitoring probe IPs ----
+# Health check probes should bypass CRS to avoid false positives.
+# Source: https://nodeping.com/content/txt/pinghosts.txt
+{% for ip in nodeping_ips %}
+SecRule REMOTE_ADDR "@ipMatch {{ ip }}" \\
+    "id:{{ 1000200 + loop.index }},\\
      phase:1,\\
      pass,\\
      nolog,\\
@@ -444,3 +474,18 @@ EVASIVE_CONF_TEMPLATE = """\
     DOSWhitelist            192.168.*.*
 </IfModule>
 """
+
+
+def _exclusions_template_hash() -> str:
+    """Compute MD5 hash of NS_EXCLUSIONS_TEMPLATE source.
+
+    Any change to the template (new rules, modified rules, structural changes)
+    automatically produces a different hash. Deployed files embed this hash
+    so 'waf status' can detect drift without manual version bumping.
+    """
+    import hashlib
+
+    return hashlib.md5(NS_EXCLUSIONS_TEMPLATE.encode()).hexdigest()[:12]
+
+
+NS_EXCLUSIONS_HASH = _exclusions_template_hash()
