@@ -1,7 +1,8 @@
 """Tests for WAF module functions."""
 
 import pytest
-from unittest.mock import patch, MagicMock, call
+from pathlib import Path
+from unittest.mock import patch, MagicMock, call, ANY
 from jinja2 import Template
 
 
@@ -425,3 +426,337 @@ class TestSetModeEvasiveIntegration:
         assert not any("evasive" in c for c in run_calls)
         # Message should NOT mention mod_evasive
         assert "mod_evasive" not in result.message
+
+
+class TestFetchNodepingProbeIps:
+    """Tests for fetch_nodeping_probe_ips function."""
+
+    def test_returns_ips_from_mtls_util(self):
+        """Should delegate to mTLS fetch_nodeping_ips utility."""
+        from nssec.modules.waf import fetch_nodeping_probe_ips
+
+        with patch(
+            "nssec.modules.mtls.utils.fetch_nodeping_ips",
+            return_value=(["52.71.195.82", "3.21.118.250"], ""),
+        ):
+            ips, err = fetch_nodeping_probe_ips()
+
+        assert ips == ["52.71.195.82", "3.21.118.250"]
+        assert err == ""
+
+    def test_returns_error_on_failure(self):
+        """Should propagate error from mTLS utility."""
+        from nssec.modules.waf import fetch_nodeping_probe_ips
+
+        with patch(
+            "nssec.modules.mtls.utils.fetch_nodeping_ips",
+            return_value=([], "Failed to fetch NodePing IPs: connection error"),
+        ):
+            ips, err = fetch_nodeping_probe_ips()
+
+        assert ips == []
+        assert "Failed to fetch" in err
+
+
+class TestInstallExclusionsWithNodeping:
+    """Tests for install_exclusions with nodeping_ips parameter."""
+
+    def test_passes_nodeping_ips_to_template(self, mock_file_ops):
+        """Should pass nodeping_ips to the exclusions template."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        installer = ModSecurityInstaller()
+        nodeping = ["52.71.195.82", "3.21.118.250"]
+        result = installer.install_exclusions(nodeping_ips=nodeping)
+
+        assert result.success
+        render_call = mock_file_ops["render"].call_args
+        assert render_call[1].get("nodeping_ips") == nodeping or \
+            nodeping in render_call[0] if render_call[0] else False
+
+    def test_defaults_to_empty_nodeping_list(self, mock_file_ops):
+        """Should default to empty list when no nodeping_ips provided."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        installer = ModSecurityInstaller()
+        result = installer.install_exclusions()
+
+        assert result.success
+        render_call = mock_file_ops["render"].call_args
+        # nodeping_ips should be an empty list
+        assert render_call[1].get("nodeping_ips") == [] or \
+            render_call.kwargs.get("nodeping_ips") == []
+
+    def test_passes_both_admin_and_nodeping_ips(self, mock_file_ops):
+        """Should pass both admin_ips and nodeping_ips to template."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        installer = ModSecurityInstaller()
+        admin = ["192.168.1.100"]
+        nodeping = ["52.71.195.82"]
+        result = installer.install_exclusions(admin_ips=admin, nodeping_ips=nodeping)
+
+        assert result.success
+        render_call = mock_file_ops["render"].call_args
+        assert render_call.kwargs.get("admin_ips") == admin
+        assert render_call.kwargs.get("nodeping_ips") == nodeping
+
+
+class TestNodepingExclusionsTemplate:
+    """Tests for NS_EXCLUSIONS_TEMPLATE with NodePing IPs."""
+
+    def test_renders_nodeping_section(self):
+        """Should render NodePing IP rules in the exclusions template."""
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=["52.71.195.82", "3.21.118.250"],
+        )
+        assert "NodePing monitoring probe IPs" in rendered
+        assert "52.71.195.82" in rendered
+        assert "3.21.118.250" in rendered
+        assert "id:1000201" in rendered
+        assert "id:1000202" in rendered
+
+    def test_omits_nodeping_section_when_empty(self):
+        """Should not render NodePing section when list is empty."""
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=[],
+        )
+        assert "NodePing" not in rendered
+
+    def test_nodeping_rule_ids_separate_from_admin(self):
+        """NodePing rules should use 1000200+ range, admin uses 1000100+."""
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=["192.168.1.100"],
+            nodeping_ips=["52.71.195.82"],
+        )
+        assert "id:1000101" in rendered  # admin IP
+        assert "id:1000201" in rendered  # NodePing IP
+
+    def test_nodeping_rules_bypass_crs(self):
+        """NodePing rules should bypass all CRS rules."""
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=["52.71.195.82"],
+        )
+        # Find the NodePing rule section
+        lines = rendered.split("\n")
+        nodeping_rule_lines = [l for l in lines if "1000201" in l]
+        assert len(nodeping_rule_lines) > 0
+        assert "ruleRemoveByTag=OWASP_CRS" in rendered
+
+
+class TestInstallCrsV4UpdatesSetup:
+    """Tests for install_crs_v4 updating crs-setup.conf when v4 already present."""
+
+    def test_updates_crs_setup_when_v4_present(self, mock_file_ops):
+        """Should update crs-setup.conf even when CRS v4 is already installed."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        installer = ModSecurityInstaller()
+        pf = MagicMock()
+        pf.crs_installed = True
+        pf.crs_version = "4.8.0"
+        pf.crs_path = "/etc/modsecurity/crs"
+        pf.can_proceed = True
+        installer._preflight = pf
+
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.7"), \
+             patch("nssec.modules.waf.version_gte", return_value=True):
+            result = installer.install_crs_v4()
+
+        assert result.skipped
+        assert "crs-setup.conf updated" in result.message
+        # Should have called write_file for crs-setup.conf
+        mock_file_ops["write"].assert_called_once()
+        write_args = mock_file_ops["write"].call_args
+        assert "crs-setup.conf" in write_args[0][0]
+
+    def test_skips_setup_update_renders_template(self, mock_file_ops):
+        """Should render the CRS_SETUP_OVERRIDES_TEMPLATE when updating."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        installer = ModSecurityInstaller()
+        pf = MagicMock()
+        pf.crs_installed = True
+        pf.crs_version = "4.8.0"
+        pf.crs_path = "/etc/modsecurity/crs"
+        pf.can_proceed = True
+        installer._preflight = pf
+
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.7"), \
+             patch("nssec.modules.waf.version_gte", return_value=True):
+            installer.install_crs_v4()
+
+        # render should have been called for crs-setup.conf
+        mock_file_ops["render"].assert_called_once()
+
+
+class TestPreflightCacheRefresh:
+    """Tests for preflight cache being cleared after CRS download."""
+
+    def test_clears_preflight_after_download(self, mock_file_ops):
+        """Should clear _preflight cache after successful CRS download."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        with patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)), \
+             patch("nssec.modules.waf.Path"):
+            installer = ModSecurityInstaller()
+            pf = MagicMock()
+            pf.crs_installed = False
+            pf.crs_version = None
+            pf.crs_path = None
+            pf.can_proceed = True
+            installer._preflight = pf
+
+            result = installer._download_crs_from_github()
+
+        assert result.success
+        assert installer._preflight is None
+
+    def test_does_not_clear_preflight_on_download_failure(self, mock_file_ops):
+        """Should not clear preflight cache if download fails."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        with patch("nssec.modules.waf.run_cmd", return_value=("", "error", 1)):
+            installer = ModSecurityInstaller()
+            pf = MagicMock()
+            installer._preflight = pf
+
+            result = installer._download_crs_from_github()
+
+        assert not result.success
+        assert installer._preflight is pf  # unchanged
+
+
+class TestDisableIncompatibleCrsRules:
+    """Tests for ModSecurityInstaller._disable_incompatible_crs_rules."""
+
+    def test_disables_rules_on_old_modsec(self, tmp_path, mock_file_ops):
+        """Should rename .conf to .conf.disabled when ModSec < 2.9.6."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        rule_file = rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf"
+        rule_file.write_text("# rule content")
+
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), \
+             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: False):
+            installer = ModSecurityInstaller()
+            disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
+
+        assert disabled == ["REQUEST-922-MULTIPART-ATTACK.conf"]
+        assert (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf.disabled").exists()
+        assert not rule_file.exists()
+
+    def test_skips_on_new_modsec(self, tmp_path, mock_file_ops):
+        """Should not disable rules when ModSec >= 2.9.6."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        rule_file = rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf"
+        rule_file.write_text("# rule content")
+
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.6"), \
+             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: True):
+            installer = ModSecurityInstaller()
+            disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
+
+        assert disabled == []
+        assert rule_file.exists()
+
+    def test_skips_already_disabled(self, tmp_path, mock_file_ops):
+        """Should not rename if .conf.disabled already exists."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        # Both files exist — should not touch them
+        (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf").write_text("# rule")
+        (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf.disabled").write_text("# disabled")
+
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), \
+             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: False):
+            installer = ModSecurityInstaller()
+            disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
+
+        assert disabled == []
+
+    def test_handles_missing_rule_file(self, tmp_path, mock_file_ops):
+        """Should handle case where rule file doesn't exist."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        # No rule files created
+
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), \
+             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: False):
+            installer = ModSecurityInstaller()
+            disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
+
+        assert disabled == []
+
+
+class TestReenableCrsRules:
+    """Tests for ModSecurityInstaller._reenable_crs_rules."""
+
+    def test_reenables_disabled_rules(self, tmp_path, mock_file_ops):
+        """Should rename .conf.disabled back to .conf."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        disabled_file = rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf.disabled"
+        disabled_file.write_text("# rule content")
+
+        installer = ModSecurityInstaller()
+        reenabled = installer._reenable_crs_rules(str(tmp_path))
+
+        assert reenabled == ["REQUEST-922-MULTIPART-ATTACK.conf"]
+        assert (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf").exists()
+        assert not disabled_file.exists()
+
+    def test_skips_when_target_exists(self, tmp_path, mock_file_ops):
+        """Should not rename if .conf already exists (avoid overwrite)."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf").write_text("# active")
+        (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf.disabled").write_text("# old")
+
+        installer = ModSecurityInstaller()
+        reenabled = installer._reenable_crs_rules(str(tmp_path))
+
+        assert reenabled == []
+
+    def test_returns_empty_when_nothing_disabled(self, tmp_path, mock_file_ops):
+        """Should return empty list when no disabled files found."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf").write_text("# active")
+
+        installer = ModSecurityInstaller()
+        reenabled = installer._reenable_crs_rules(str(tmp_path))
+
+        assert reenabled == []
+
+

@@ -17,6 +17,7 @@ from nssec.modules.waf.config import (
     CRS_APT_PACKAGE,
     CRS_GITHUB_DOWNLOAD,
     CRS_INSTALL_DIR,
+    CRS_RULES_REQUIRE_296,
     CRS_SEARCH_PATHS,
     CRS_SETUP_OVERRIDES_TEMPLATE,
     EVASIVE_CONF,
@@ -36,7 +37,9 @@ from nssec.modules.waf.config import (
     MODSEC_PACKAGE,
     MODSEC_TMP_DIR,
     NS_EXCLUSIONS_CONF,
+    NS_EXCLUSIONS_HASH,
     NS_EXCLUSIONS_TEMPLATE,
+    NS_EXCLUSIONS_VERSION,
     PINNED_CRS_VERSION,
     SECURITY2_CONF,
     SECURITY2_CONF_TEMPLATE,
@@ -47,15 +50,24 @@ from nssec.modules.waf.utils import (
     append_crs_to_security2,
     backup_file,
     detect_modsec_mode,
+    detect_modsec_version,
     file_exists,
     package_installed,
     parse_security2_conf,
     read_file,
     render,
     run_cmd,
+    version_gte,
     write_file,
     write_security2_full,
 )
+
+
+def fetch_nodeping_probe_ips() -> tuple[list[str], str]:
+    """Fetch NodePing monitoring probe IPs for WAF allowlisting."""
+    from nssec.modules.mtls.utils import fetch_nodeping_ips
+
+    return fetch_nodeping_ips()
 
 
 def get_allowlisted_ips() -> list[str]:
@@ -82,7 +94,12 @@ def add_allowlisted_ip(ip: str) -> StepResult:
     if file_exists(NS_EXCLUSIONS_CONF):
         backup_file(NS_EXCLUSIONS_CONF)
 
-    content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=new_ips)
+    content = render(
+        NS_EXCLUSIONS_TEMPLATE,
+        admin_ips=new_ips,
+        version=NS_EXCLUSIONS_VERSION,
+        template_hash=NS_EXCLUSIONS_HASH,
+    )
     if not write_file(NS_EXCLUSIONS_CONF, content):
         return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
 
@@ -100,7 +117,12 @@ def remove_allowlisted_ip(ip: str) -> StepResult:
     if file_exists(NS_EXCLUSIONS_CONF):
         backup_file(NS_EXCLUSIONS_CONF)
 
-    content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=new_ips)
+    content = render(
+        NS_EXCLUSIONS_TEMPLATE,
+        admin_ips=new_ips,
+        version=NS_EXCLUSIONS_VERSION,
+        template_hash=NS_EXCLUSIONS_HASH,
+    )
     if not write_file(NS_EXCLUSIONS_CONF, content):
         return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
 
@@ -317,7 +339,12 @@ class ModSecurityInstaller:
 
         has_v4 = pf.crs_installed and pf.crs_version and pf.crs_version.startswith("4")
         if has_v4:
-            msg = f"CRS v{pf.crs_version} already installed at {pf.crs_path}"
+            # Still update crs-setup.conf with latest template values
+            self._update_crs_setup(pf.crs_path)
+            disabled = self._disable_incompatible_crs_rules(pf.crs_path)
+            msg = f"CRS v{pf.crs_version} at {pf.crs_path} (crs-setup.conf updated)"
+            if disabled:
+                msg += f"; disabled {len(disabled)} rule(s) incompatible with ModSec < 2.9.6"
             return StepResult(skipped=True, message=msg)
 
         if self.dry_run:
@@ -351,6 +378,39 @@ class ModSecurityInstaller:
             return StepResult(message=msg)
         return None
 
+    def _update_crs_setup(self, crs_path: str) -> bool:
+        """Write crs-setup.conf from template. Returns True on success."""
+        setup_content = render(
+            CRS_SETUP_OVERRIDES_TEMPLATE,
+            paranoia_level=1,
+            inbound_threshold=5,
+            outbound_threshold=4,
+        )
+        setup_path = f"{crs_path}/crs-setup.conf"
+        return write_file(setup_path, setup_content)
+
+    def _disable_incompatible_crs_rules(self, crs_path: str) -> list[str]:
+        """Disable CRS rules incompatible with the installed ModSecurity version.
+
+        On ModSecurity < 2.9.6, renames rule files in CRS_RULES_REQUIRE_296
+        from .conf to .conf.disabled to prevent Apache startup failures.
+
+        Returns list of disabled filenames (empty if >= 2.9.6 or nothing to do).
+        """
+        ver = detect_modsec_version()
+        if version_gte(ver, "2.9.6"):
+            return []
+
+        disabled: list[str] = []
+        rules_dir = Path(f"{crs_path}/rules")
+        for rule_file in CRS_RULES_REQUIRE_296:
+            src = rules_dir / rule_file
+            dst = rules_dir / (rule_file + ".disabled")
+            if src.exists() and not dst.exists():
+                src.rename(dst)
+                disabled.append(rule_file)
+        return disabled
+
     def _download_crs_from_github(self) -> StepResult:
         """Download and extract CRS v4 from GitHub releases."""
         tarball = f"/tmp/crs-v{PINNED_CRS_VERSION}.tar.gz"
@@ -377,21 +437,24 @@ class ModSecurityInstaller:
             return StepResult(success=False, error=f"Failed to extract CRS: {stderr}")
         Path(tarball).unlink(missing_ok=True)
 
-        setup_content = render(
-            CRS_SETUP_OVERRIDES_TEMPLATE,
-            paranoia_level=1,
-            inbound_threshold=5,
-            outbound_threshold=4,
-        )
-        setup_path = f"{CRS_INSTALL_DIR}/crs-setup.conf"
-        if not write_file(setup_path, setup_content):
-            return StepResult(success=False, error=f"Failed to write {setup_path}")
+        if not self._update_crs_setup(CRS_INSTALL_DIR):
+            return StepResult(
+                success=False, error=f"Failed to write {CRS_INSTALL_DIR}/crs-setup.conf"
+            )
+
+        # Refresh preflight cache so write_security2_conf() uses the new CRS path
+        self._preflight = None
+
+        disabled = self._disable_incompatible_crs_rules(CRS_INSTALL_DIR)
         msg = f"Installed CRS v{PINNED_CRS_VERSION} to {CRS_INSTALL_DIR}"
+        if disabled:
+            msg += f"; disabled {len(disabled)} rule(s) incompatible with ModSec < 2.9.6"
         return StepResult(message=msg)
 
     def install_exclusions(
         self,
         admin_ips: list[str] | None = None,
+        nodeping_ips: list[str] | None = None,
     ) -> StepResult:
         """Write NetSapiens-specific ModSecurity exclusions."""
         if self.dry_run:
@@ -400,7 +463,13 @@ class ModSecurityInstaller:
         if file_exists(NS_EXCLUSIONS_CONF):
             backup_file(NS_EXCLUSIONS_CONF)
 
-        content = render(NS_EXCLUSIONS_TEMPLATE, admin_ips=admin_ips or [])
+        content = render(
+            NS_EXCLUSIONS_TEMPLATE,
+            admin_ips=admin_ips or [],
+            nodeping_ips=nodeping_ips or [],
+            version=NS_EXCLUSIONS_VERSION,
+            template_hash=NS_EXCLUSIONS_HASH,
+        )
         if not write_file(NS_EXCLUSIONS_CONF, content):
             return StepResult(
                 success=False,
@@ -500,7 +569,11 @@ class ModSecurityInstaller:
     # Full install orchestration
     # ------------------------------------------------------------------
 
-    def run(self, admin_ips: list[str] | None = None) -> InstallResult:
+    def run(
+        self,
+        admin_ips: list[str] | None = None,
+        nodeping_ips: list[str] | None = None,
+    ) -> InstallResult:
         """Run the full installation sequence."""
         result = InstallResult(mode=self.mode)
         pf = self.preflight()
@@ -519,7 +592,10 @@ class ModSecurityInstaller:
             ("Configure mod_evasive", self.setup_evasive_config),
             ("Enable mod_evasive", lambda: self.set_evasive_state(True)),
             ("Install OWASP CRS v4", self.install_crs_v4),
-            ("Install NS exclusions", lambda: self.install_exclusions(admin_ips)),
+            (
+                "Install NS exclusions",
+                lambda: self.install_exclusions(admin_ips, nodeping_ips),
+            ),
             ("Update security2.conf", self.write_security2_conf),
             ("Validate Apache config", self.validate_config),
         ]
@@ -582,3 +658,21 @@ class ModSecurityInstaller:
 
         msg = f"SecRuleEngine set to {mode} and Apache reloaded"
         return StepResult(message=msg)
+
+    def _reenable_crs_rules(self, crs_path: str) -> list[str]:
+        """Re-enable CRS rules previously disabled for ModSec < 2.9.6.
+
+        Renames .conf.disabled files back to .conf for rules in
+        CRS_RULES_REQUIRE_296.
+
+        Returns list of re-enabled filenames.
+        """
+        reenabled: list[str] = []
+        rules_dir = Path(f"{crs_path}/rules")
+        for rule_file in CRS_RULES_REQUIRE_296:
+            disabled = rules_dir / (rule_file + ".disabled")
+            target = rules_dir / rule_file
+            if disabled.exists() and not target.exists():
+                disabled.rename(target)
+                reenabled.append(rule_file)
+        return reenabled
