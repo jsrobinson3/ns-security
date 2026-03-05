@@ -11,7 +11,6 @@ import shutil
 from pathlib import Path
 
 from nssec.core.ssh import is_directory, is_root
-
 from nssec.modules.waf.config import (
     BACKUP_SUFFIX,
     CRS_APT_PACKAGE,
@@ -22,8 +21,8 @@ from nssec.modules.waf.config import (
     CRS_SETUP_OVERRIDES_TEMPLATE,
     EVASIVE_CONF,
     EVASIVE_CONF_TEMPLATE,
-    EVASIVE_LOAD,
     EVASIVE_DEFAULT_PROFILE,
+    EVASIVE_LOAD,
     EVASIVE_LOG_DIR,
     EVASIVE_LOG_FILE,
     EVASIVE_PACKAGE,

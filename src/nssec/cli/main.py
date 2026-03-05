@@ -70,6 +70,7 @@ def cli(ctx, host, sudo):
     # Set up sudo for local execution if no host specified
     if sudo and not host:
         from nssec.core.ssh import set_use_sudo
+
         set_use_sudo(True)
 
     if host:

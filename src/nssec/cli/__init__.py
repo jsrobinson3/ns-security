@@ -6,7 +6,6 @@ Shared utilities used by CLI sub-modules (audit, waf_commands, etc.).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import click
 from rich.console import Console
@@ -36,7 +35,7 @@ def _is_within_allowed_bases(resolved: Path, bases: tuple[Path, ...]) -> bool:
 def validate_path(
     path_str: str,
     param_name: str,
-    allowed_bases: Optional[tuple[Path, ...]] = None,
+    allowed_bases: tuple[Path, ...] | None = None,
     must_be_within_cwd: bool = False,
 ) -> Path:
     """Validate a path to prevent path traversal attacks.

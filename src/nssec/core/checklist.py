@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from nssec.core import ssh
 
@@ -40,9 +39,9 @@ class CheckResult:
     status: CheckStatus
     severity: Severity
     message: str
-    details: Optional[str] = None
-    remediation: Optional[str] = None
-    reference: Optional[str] = None
+    details: str | None = None
+    remediation: str | None = None
+    reference: str | None = None
 
 
 @dataclass
@@ -87,15 +86,15 @@ class BaseCheck(ABC):
     name: str = ""
     description: str = ""
     severity: Severity = Severity.MEDIUM
-    applies_to: Optional[list[str]] = None  # Server types this check applies to
-    reference: Optional[str] = None  # Documentation reference
+    applies_to: list[str] | None = None  # Server types this check applies to
+    reference: str | None = None  # Documentation reference
 
     @abstractmethod
     def run(self) -> CheckResult:
         """Execute the check and return result."""
         pass
 
-    def _pass(self, message: str, details: Optional[str] = None) -> CheckResult:
+    def _pass(self, message: str, details: str | None = None) -> CheckResult:
         return CheckResult(
             check_id=self.check_id,
             name=self.name,
@@ -107,7 +106,7 @@ class BaseCheck(ABC):
         )
 
     def _fail(
-        self, message: str, details: Optional[str] = None, remediation: Optional[str] = None
+        self, message: str, details: str | None = None, remediation: str | None = None
     ) -> CheckResult:
         return CheckResult(
             check_id=self.check_id,
@@ -121,7 +120,7 @@ class BaseCheck(ABC):
         )
 
     def _warn(
-        self, message: str, details: Optional[str] = None, remediation: Optional[str] = None
+        self, message: str, details: str | None = None, remediation: str | None = None
     ) -> CheckResult:
         return CheckResult(
             check_id=self.check_id,
@@ -143,7 +142,7 @@ class BaseCheck(ABC):
             message=message,
         )
 
-    def _error(self, message: str, details: Optional[str] = None) -> CheckResult:
+    def _error(self, message: str, details: str | None = None) -> CheckResult:
         return CheckResult(
             check_id=self.check_id,
             name=self.name,
@@ -154,7 +153,7 @@ class BaseCheck(ABC):
         )
 
 
-def run_command(cmd: list[str], timeout: int = 30) -> tuple[Optional[str], Optional[str], int]:
+def run_command(cmd: list[str], timeout: int = 30) -> tuple[str | None, str | None, int]:
     """Run a command locally or remotely (if SSH host is configured).
 
     Args:
@@ -187,7 +186,7 @@ def file_contains(path: Path, pattern: str, ignore_comments: bool = True) -> boo
     return False
 
 
-def _extract_config_value(line: str, key: str, separator: str) -> Optional[str]:
+def _extract_config_value(line: str, key: str, separator: str) -> str | None:
     """Extract a value from a config line if it matches the key."""
     line = line.strip()
     if line.startswith("#"):
@@ -200,7 +199,7 @@ def _extract_config_value(line: str, key: str, separator: str) -> Optional[str]:
     return None
 
 
-def get_file_value(path: Path, key: str, separator: str = " ") -> Optional[str]:
+def get_file_value(path: Path, key: str, separator: str = " ") -> str | None:
     """Get a configuration value from a file (works locally or via SSH)."""
     content = ssh.read_file(str(path))
     if content is None:

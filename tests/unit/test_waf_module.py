@@ -1,8 +1,7 @@
 """Tests for WAF module functions."""
 
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock, call, ANY
+from unittest.mock import MagicMock, patch
+
 from jinja2 import Template
 
 
@@ -304,8 +303,9 @@ class TestSetEvasiveState:
         """Should run a2enmod evasive when enabling."""
         from nssec.modules.waf import ModSecurityInstaller
 
-        with patch("nssec.modules.waf.package_installed", return_value=True), \
-             patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)) as mock_run:
+        with patch("nssec.modules.waf.package_installed", return_value=True), patch(
+            "nssec.modules.waf.run_cmd", return_value=("", "", 0)
+        ) as mock_run:
             mock_file_ops["exists"].return_value = False  # not currently enabled
             installer = ModSecurityInstaller()
             result = installer.set_evasive_state(enable=True)
@@ -318,8 +318,9 @@ class TestSetEvasiveState:
         """Should run a2dismod evasive when disabling."""
         from nssec.modules.waf import ModSecurityInstaller
 
-        with patch("nssec.modules.waf.package_installed", return_value=True), \
-             patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)) as mock_run:
+        with patch("nssec.modules.waf.package_installed", return_value=True), patch(
+            "nssec.modules.waf.run_cmd", return_value=("", "", 0)
+        ) as mock_run:
             mock_file_ops["exists"].return_value = True  # currently enabled
             installer = ModSecurityInstaller()
             result = installer.set_evasive_state(enable=False)
@@ -367,8 +368,9 @@ class TestSetEvasiveState:
         """Should not run commands in dry run mode."""
         from nssec.modules.waf import ModSecurityInstaller
 
-        with patch("nssec.modules.waf.package_installed", return_value=True), \
-             patch("nssec.modules.waf.run_cmd") as mock_run:
+        with patch("nssec.modules.waf.package_installed", return_value=True), patch(
+            "nssec.modules.waf.run_cmd"
+        ) as mock_run:
             mock_file_ops["exists"].return_value = False
             installer = ModSecurityInstaller(dry_run=True)
             result = installer.set_evasive_state(enable=True)
@@ -381,8 +383,9 @@ class TestSetEvasiveState:
         """Should return error if a2enmod/a2dismod fails."""
         from nssec.modules.waf import ModSecurityInstaller
 
-        with patch("nssec.modules.waf.package_installed", return_value=True), \
-             patch("nssec.modules.waf.run_cmd", return_value=("", "error", 1)):
+        with patch("nssec.modules.waf.package_installed", return_value=True), patch(
+            "nssec.modules.waf.run_cmd", return_value=("", "error", 1)
+        ):
             mock_file_ops["exists"].return_value = False
             installer = ModSecurityInstaller()
             result = installer.set_evasive_state(enable=True)
@@ -399,8 +402,9 @@ class TestSetModeEvasiveIntegration:
         from nssec.modules.waf import ModSecurityInstaller
 
         mock_file_ops["read"].return_value = "SecRuleEngine DetectionOnly\n"
-        with patch("nssec.modules.waf.package_installed", return_value=True), \
-             patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)) as mock_run:
+        with patch("nssec.modules.waf.package_installed", return_value=True), patch(
+            "nssec.modules.waf.run_cmd", return_value=("", "", 0)
+        ) as mock_run:
             mock_file_ops["exists"].return_value = False
             installer = ModSecurityInstaller()
             result = installer.set_mode("On")
@@ -415,8 +419,9 @@ class TestSetModeEvasiveIntegration:
         from nssec.modules.waf import ModSecurityInstaller
 
         mock_file_ops["read"].return_value = "SecRuleEngine On\n"
-        with patch("nssec.modules.waf.package_installed", return_value=True), \
-             patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)) as mock_run:
+        with patch("nssec.modules.waf.package_installed", return_value=True), patch(
+            "nssec.modules.waf.run_cmd", return_value=("", "", 0)
+        ) as mock_run:
             mock_file_ops["exists"].return_value = True
             installer = ModSecurityInstaller()
             result = installer.set_mode("DetectionOnly")
@@ -471,8 +476,11 @@ class TestInstallExclusionsWithNodeping:
 
         assert result.success
         render_call = mock_file_ops["render"].call_args
-        assert render_call[1].get("nodeping_ips") == nodeping or \
-            nodeping in render_call[0] if render_call[0] else False
+        assert (
+            render_call[1].get("nodeping_ips") == nodeping or nodeping in render_call[0]
+            if render_call[0]
+            else False
+        )
 
     def test_defaults_to_empty_nodeping_list(self, mock_file_ops):
         """Should default to empty list when no nodeping_ips provided."""
@@ -484,8 +492,9 @@ class TestInstallExclusionsWithNodeping:
         assert result.success
         render_call = mock_file_ops["render"].call_args
         # nodeping_ips should be an empty list
-        assert render_call[1].get("nodeping_ips") == [] or \
-            render_call.kwargs.get("nodeping_ips") == []
+        assert (
+            render_call[1].get("nodeping_ips") == [] or render_call.kwargs.get("nodeping_ips") == []
+        )
 
     def test_passes_both_admin_and_nodeping_ips(self, mock_file_ops):
         """Should pass both admin_ips and nodeping_ips to template."""
@@ -554,7 +563,7 @@ class TestNodepingExclusionsTemplate:
         )
         # Find the NodePing rule section
         lines = rendered.split("\n")
-        nodeping_rule_lines = [l for l in lines if "1000201" in l]
+        nodeping_rule_lines = [line for line in lines if "1000201" in line]
         assert len(nodeping_rule_lines) > 0
         assert "ruleRemoveByTag=OWASP_CRS" in rendered
 
@@ -574,8 +583,9 @@ class TestInstallCrsV4UpdatesSetup:
         pf.can_proceed = True
         installer._preflight = pf
 
-        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.7"), \
-             patch("nssec.modules.waf.version_gte", return_value=True):
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.7"), patch(
+            "nssec.modules.waf.version_gte", return_value=True
+        ):
             result = installer.install_crs_v4()
 
         assert result.skipped
@@ -597,8 +607,9 @@ class TestInstallCrsV4UpdatesSetup:
         pf.can_proceed = True
         installer._preflight = pf
 
-        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.7"), \
-             patch("nssec.modules.waf.version_gte", return_value=True):
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.7"), patch(
+            "nssec.modules.waf.version_gte", return_value=True
+        ):
             installer.install_crs_v4()
 
         # render should have been called for crs-setup.conf
@@ -612,8 +623,9 @@ class TestPreflightCacheRefresh:
         """Should clear _preflight cache after successful CRS download."""
         from nssec.modules.waf import ModSecurityInstaller
 
-        with patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)), \
-             patch("nssec.modules.waf.Path"):
+        with patch("nssec.modules.waf.run_cmd", return_value=("", "", 0)), patch(
+            "nssec.modules.waf.Path"
+        ):
             installer = ModSecurityInstaller()
             pf = MagicMock()
             pf.crs_installed = False
@@ -654,8 +666,9 @@ class TestDisableIncompatibleCrsRules:
         rule_file = rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf"
         rule_file.write_text("# rule content")
 
-        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), \
-             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: False):
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), patch(
+            "nssec.modules.waf.version_gte", side_effect=lambda v, t: False
+        ):
             installer = ModSecurityInstaller()
             disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
 
@@ -672,8 +685,9 @@ class TestDisableIncompatibleCrsRules:
         rule_file = rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf"
         rule_file.write_text("# rule content")
 
-        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.6"), \
-             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: True):
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.6"), patch(
+            "nssec.modules.waf.version_gte", side_effect=lambda v, t: True
+        ):
             installer = ModSecurityInstaller()
             disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
 
@@ -690,8 +704,9 @@ class TestDisableIncompatibleCrsRules:
         (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf").write_text("# rule")
         (rules_dir / "REQUEST-922-MULTIPART-ATTACK.conf.disabled").write_text("# disabled")
 
-        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), \
-             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: False):
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), patch(
+            "nssec.modules.waf.version_gte", side_effect=lambda v, t: False
+        ):
             installer = ModSecurityInstaller()
             disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
 
@@ -705,8 +720,9 @@ class TestDisableIncompatibleCrsRules:
         rules_dir.mkdir()
         # No rule files created
 
-        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), \
-             patch("nssec.modules.waf.version_gte", side_effect=lambda v, t: False):
+        with patch("nssec.modules.waf.detect_modsec_version", return_value="2.9.5"), patch(
+            "nssec.modules.waf.version_gte", side_effect=lambda v, t: False
+        ):
             installer = ModSecurityInstaller()
             disabled = installer._disable_incompatible_crs_rules(str(tmp_path))
 
@@ -758,5 +774,3 @@ class TestReenableCrsRules:
         reenabled = installer._reenable_crs_rules(str(tmp_path))
 
         assert reenabled == []
-
-
