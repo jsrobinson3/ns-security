@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "2"
+NS_EXCLUSIONS_VERSION = "3"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -186,15 +186,16 @@ SECURITY2_CONF_TEMPLATE = """\
     # Main ModSecurity config
     IncludeOptional /etc/modsecurity/modsecurity.conf
 
-    # NetSapiens-specific exclusions
-    IncludeOptional /etc/modsecurity/netsapiens-exclusions.conf
-
     # OWASP CRS setup and rules
     IncludeOptional {{ crs_path }}/crs-setup.conf
     IncludeOptional {{ crs_path }}/plugins/*-config.conf
     IncludeOptional {{ crs_path }}/plugins/*-before.conf
     IncludeOptional {{ crs_path }}/rules/*.conf
     IncludeOptional {{ crs_path }}/plugins/*-after.conf
+
+    # NetSapiens-specific exclusions (MUST load after CRS rules so that
+    # SecRuleUpdateTargetById directives can find the rules they modify)
+    IncludeOptional /etc/modsecurity/netsapiens-exclusions.conf
 </IfModule>
 """
 
@@ -263,6 +264,15 @@ SecRule REQUEST_URI "@beginsWith /frm/" \\
      nolog,\\
      ctl:responseBodyAccess=Off"
 
+# ---- Portal login password false positives ----
+# Passwords with shell metacharacters ($, ~, ^, |) trigger RCE rule 932270.
+SecRule REQUEST_URI "@beginsWith /portal/login/login" \\
+    "id:1000008,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=932270;ARGS:data[Login][password]"
+
 # ---- iNSight health checks ----
 SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
     "id:1000006,\\
@@ -322,7 +332,7 @@ SecAction \\
      nolog,\\
      pass,\\
      t:none,\\
-     setvar:tx.crs_setup_version=400,\\
+     setvar:tx.crs_setup_version=480,\\
      setvar:tx.paranoia_level={{ paranoia_level }},\\
      setvar:tx.blocking_paranoia_level={{ paranoia_level }},\\
      setvar:tx.detection_paranoia_level={{ paranoia_level }}"
