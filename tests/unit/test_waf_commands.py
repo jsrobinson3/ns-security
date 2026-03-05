@@ -1,7 +1,8 @@
 """Tests for WAF CLI commands."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
 from nssec.cli.waf_commands import waf
@@ -90,9 +91,9 @@ class TestWafRemove:
 
     def test_disables_security2_module(self, runner):
         """Should disable security2 Apache module."""
-        with patch("nssec.core.ssh.is_root", return_value=True), \
-             patch("nssec.modules.waf.utils.file_exists", return_value=True), \
-             patch("nssec.modules.waf.utils.run_cmd") as mock_run:
+        with patch("nssec.core.ssh.is_root", return_value=True), patch(
+            "nssec.modules.waf.utils.file_exists", return_value=True
+        ), patch("nssec.modules.waf.utils.run_cmd") as mock_run:
             mock_run.return_value = ("", "", 0)
 
             result = runner.invoke(waf, ["remove", "-y"])
@@ -104,8 +105,9 @@ class TestWafRemove:
 
     def test_skips_if_already_disabled(self, runner):
         """Should skip if module already disabled."""
-        with patch("nssec.core.ssh.is_root", return_value=True), \
-             patch("nssec.modules.waf.utils.file_exists", return_value=False):
+        with patch("nssec.core.ssh.is_root", return_value=True), patch(
+            "nssec.modules.waf.utils.file_exists", return_value=False
+        ):
             result = runner.invoke(waf, ["remove", "-y"])
 
             assert result.exit_code == 0
@@ -121,8 +123,9 @@ class TestWafRemove:
 
     def test_prompts_without_yes_flag(self, runner):
         """Should prompt for confirmation without -y flag."""
-        with patch("nssec.core.ssh.is_root", return_value=True), \
-             patch("nssec.modules.waf.utils.file_exists", return_value=True):
+        with patch("nssec.core.ssh.is_root", return_value=True), patch(
+            "nssec.modules.waf.utils.file_exists", return_value=True
+        ):
             result = runner.invoke(waf, ["remove"], input="n\n")
 
             assert "Aborted" in result.output
@@ -133,8 +136,9 @@ class TestWafAllowlistAdd:
 
     def test_adds_ip_to_allowlist(self, runner, mock_installer):
         """Should add IP to allowlist."""
-        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=[]), \
-             patch("nssec.modules.waf.add_allowlisted_ip") as mock_add:
+        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=[]), patch(
+            "nssec.modules.waf.add_allowlisted_ip"
+        ) as mock_add:
             mock_add.return_value = MagicMock(success=True, message="Added")
 
             result = runner.invoke(waf, ["allowlist", "add", "192.168.1.100", "-y"])
@@ -164,8 +168,9 @@ class TestWafAllowlistDelete:
 
     def test_removes_ip_from_allowlist(self, runner, mock_installer):
         """Should remove IP from allowlist."""
-        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=["192.168.1.100"]), \
-             patch("nssec.modules.waf.remove_allowlisted_ip") as mock_remove:
+        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=["192.168.1.100"]), patch(
+            "nssec.modules.waf.remove_allowlisted_ip"
+        ) as mock_remove:
             mock_remove.return_value = MagicMock(success=True, message="Removed")
 
             result = runner.invoke(waf, ["allowlist", "delete", "192.168.1.100", "-y"])
@@ -195,7 +200,9 @@ class TestWafAllowlistShow:
 
     def test_shows_allowlisted_ips(self, runner):
         """Should display allowlisted IPs."""
-        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=["192.168.1.100", "10.0.0.0/8"]):
+        with patch(
+            "nssec.modules.waf.get_allowlisted_ips", return_value=["192.168.1.100", "10.0.0.0/8"]
+        ):
             result = runner.invoke(waf, ["allowlist", "show"])
 
             assert result.exit_code == 0
@@ -301,8 +308,9 @@ class TestWafEvasiveStatus:
 
     def test_shows_enabled_status(self, runner):
         """Should show enabled status when evasive is active."""
-        with patch("nssec.modules.waf.utils.package_installed", return_value=True), \
-             patch("nssec.modules.waf.utils.file_exists", return_value=True):
+        with patch("nssec.modules.waf.utils.package_installed", return_value=True), patch(
+            "nssec.modules.waf.utils.file_exists", return_value=True
+        ):
             result = runner.invoke(waf, ["evasive", "status"])
 
         assert result.exit_code == 0
@@ -318,8 +326,9 @@ class TestWafEvasiveStatus:
 
     def test_default_subcommand_shows_status(self, runner):
         """Running 'waf evasive' without subcommand should show status."""
-        with patch("nssec.modules.waf.utils.package_installed", return_value=True), \
-             patch("nssec.modules.waf.utils.file_exists", return_value=True):
+        with patch("nssec.modules.waf.utils.package_installed", return_value=True), patch(
+            "nssec.modules.waf.utils.file_exists", return_value=True
+        ):
             result = runner.invoke(waf, ["evasive"])
 
         assert result.exit_code == 0
@@ -434,8 +443,9 @@ class TestWafUpdate:
         """Should fail if not root."""
         mock_installer.preflight.return_value.is_root = False
 
-        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.5"), \
-             patch("nssec.modules.waf.utils.version_gte", return_value=False):
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.5"), patch(
+            "nssec.modules.waf.utils.version_gte", return_value=False
+        ):
             result = runner.invoke(waf, ["update", "-y"])
 
         assert result.exit_code == 1
@@ -443,8 +453,9 @@ class TestWafUpdate:
 
     def test_shows_instructions_when_old(self, runner, mock_installer):
         """Should show Digitalwave repo instructions when ModSec < 2.9.6."""
-        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.5"), \
-             patch("nssec.modules.waf.utils.version_gte", return_value=False):
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.5"), patch(
+            "nssec.modules.waf.utils.version_gte", return_value=False
+        ):
             result = runner.invoke(waf, ["update", "-y"])
 
         assert result.exit_code == 0
@@ -457,8 +468,9 @@ class TestWafUpdate:
         mock_installer._reenable_crs_rules.return_value = []
         mock_installer.preflight.return_value.crs_path = "/etc/modsecurity/crs"
 
-        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.7"), \
-             patch("nssec.modules.waf.utils.version_gte", return_value=True):
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.7"), patch(
+            "nssec.modules.waf.utils.version_gte", return_value=True
+        ):
             result = runner.invoke(waf, ["update", "-y"])
 
         assert result.exit_code == 0
@@ -479,8 +491,9 @@ class TestWafUpdate:
         reload_result.message = "Apache reloaded"
         mock_installer.reload_apache.return_value = reload_result
 
-        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.7"), \
-             patch("nssec.modules.waf.utils.version_gte", return_value=True):
+        with patch("nssec.modules.waf.utils.detect_modsec_version", return_value="2.9.7"), patch(
+            "nssec.modules.waf.utils.version_gte", return_value=True
+        ):
             result = runner.invoke(waf, ["update", "-y"])
 
         assert result.exit_code == 0

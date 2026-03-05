@@ -21,16 +21,15 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 # Global remote host - when set, all commands execute via SSH
-_remote_host: Optional[str] = None
+_remote_host: str | None = None
 
 # Global sudo flag - when set, commands are prefixed with sudo
 _use_sudo: bool = False
 
 
-def set_remote_host(host: Optional[str]) -> None:
+def set_remote_host(host: str | None) -> None:
     """Set the remote host for SSH execution.
 
     Args:
@@ -41,7 +40,7 @@ def set_remote_host(host: Optional[str]) -> None:
     _remote_host = host
 
 
-def get_remote_host() -> Optional[str]:
+def get_remote_host() -> str | None:
     """Get the current remote host, or None if running locally."""
     return _remote_host
 
@@ -119,8 +118,8 @@ class SSHExecutor:
     def run_command(
         self,
         cmd: list[str],
-        timeout: Optional[int] = None,
-        use_sudo: Optional[bool] = None,
+        timeout: int | None = None,
+        use_sudo: bool | None = None,
     ) -> tuple[str, str, int]:
         """Run a command on the remote host via SSH.
 
@@ -164,7 +163,7 @@ class SSHExecutor:
         except Exception as e:
             return "", str(e), -1
 
-    def read_file(self, path: str) -> Optional[str]:
+    def read_file(self, path: str) -> str | None:
         """Read a file from the remote host.
 
         Args:
@@ -232,10 +231,10 @@ def _shell_quote(s: str) -> str:
 
 
 # Global executor instance (created when remote host is set)
-_executor: Optional[SSHExecutor] = None
+_executor: SSHExecutor | None = None
 
 
-def get_executor() -> Optional[SSHExecutor]:
+def get_executor() -> SSHExecutor | None:
     """Get the global SSH executor, or None if running locally."""
     global _executor
     if _remote_host:
@@ -283,7 +282,7 @@ def run_command(cmd: list[str], timeout: int = 30) -> tuple[str, str, int]:
         return "", str(e), -1
 
 
-def read_file(path: str) -> Optional[str]:
+def read_file(path: str) -> str | None:
     """Read a file locally or remotely depending on configuration.
 
     Args:

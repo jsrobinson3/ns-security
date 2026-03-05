@@ -23,11 +23,15 @@ def mtls(ctx):
         console.print("[bold]Allowlist Commands:[/bold]")
         console.print("  [cyan]nssec mtls allowlist show[/cyan]      Show all whitelisted IPs")
         console.print("  [cyan]nssec mtls allowlist add[/cyan]       Add an IP to the allowlist")
-        console.print("  [cyan]nssec mtls allowlist remove[/cyan]    Remove an IP from the allowlist")
+        console.print(
+            "  [cyan]nssec mtls allowlist remove[/cyan]    Remove an IP from the allowlist"
+        )
         console.print()
         console.print("[bold]NodePing Commands:[/bold]")
         console.print("  [cyan]nssec mtls nodeping show[/cyan]       Show current NodePing IPs")
-        console.print("  [cyan]nssec mtls nodeping fetch[/cyan]      Fetch IPs from NodePing (dry run)")
+        console.print(
+            "  [cyan]nssec mtls nodeping fetch[/cyan]      Fetch IPs from NodePing (dry run)"
+        )
         console.print("  [cyan]nssec mtls nodeping update[/cyan]     Fetch and apply NodePing IPs")
         console.print("  [cyan]nssec mtls nodeping remove[/cyan]     Remove NodePing IPs section")
 

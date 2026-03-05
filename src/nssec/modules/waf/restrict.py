@@ -146,13 +146,15 @@ def get_restrict_status(server_type: str) -> list[dict]:
         managed = is_nssec_managed(path) if exists else False
         ips = parse_htaccess_ips(path) if exists else []
 
-        statuses.append({
-            "name": target["name"],
-            "path": path,
-            "exists": exists,
-            "managed": managed,
-            "ips": ips,
-        })
+        statuses.append(
+            {
+                "name": target["name"],
+                "path": path,
+                "exists": exists,
+                "managed": managed,
+                "ips": ips,
+            }
+        )
     return statuses
 
 
@@ -246,10 +248,15 @@ def init_restrictions(
     results: list[tuple[str, StepResult]] = []
 
     if not targets:
-        results.append(("", StepResult(
-            skipped=True,
-            message="No applicable targets found for this server type",
-        )))
+        results.append(
+            (
+                "",
+                StepResult(
+                    skipped=True,
+                    message="No applicable targets found for this server type",
+                ),
+            )
+        )
         return results
 
     for target in targets:
@@ -257,9 +264,14 @@ def init_restrictions(
         name = target["name"]
 
         if dry_run:
-            results.append((name, StepResult(
-                message=f"Would create {path} with {len(all_ips)} IP(s)",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        message=f"Would create {path} with {len(all_ips)} IP(s)",
+                    ),
+                )
+            )
             continue
 
         if file_exists(path):
@@ -267,15 +279,25 @@ def init_restrictions(
 
         content = _render_htaccess(target, all_ips)
         if not write_file(path, content):
-            results.append((name, StepResult(
-                success=False,
-                error=f"Failed to write {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        success=False,
+                        error=f"Failed to write {path}",
+                    ),
+                )
+            )
             continue
 
-        results.append((name, StepResult(
-            message=f"Created {path} with {len(all_ips)} IP(s)",
-        )))
+        results.append(
+            (
+                name,
+                StepResult(
+                    message=f"Created {path} with {len(all_ips)} IP(s)",
+                ),
+            )
+        )
 
     # Save the full IP set to cache for reapply after upgrades
     if not dry_run:
@@ -305,40 +327,65 @@ def add_restricted_ip(
         name = target["name"]
 
         if not file_exists(path):
-            results.append((name, StepResult(
-                skipped=True,
-                message=f"No .htaccess at {path} (run init first)",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        skipped=True,
+                        message=f"No .htaccess at {path} (run init first)",
+                    ),
+                )
+            )
             continue
 
         if not is_nssec_managed(path):
-            results.append((name, StepResult(
-                skipped=True,
-                message=f"Skipping unmanaged {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        skipped=True,
+                        message=f"Skipping unmanaged {path}",
+                    ),
+                )
+            )
             continue
 
         current_ips = parse_htaccess_ips(path)
         if ip in current_ips:
-            results.append((name, StepResult(
-                skipped=True,
-                message=f"{ip} already in {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        skipped=True,
+                        message=f"{ip} already in {path}",
+                    ),
+                )
+            )
             continue
 
         new_ips = current_ips + [ip]
         backup_file(path)
         content = _render_htaccess(target, new_ips)
         if not write_file(path, content):
-            results.append((name, StepResult(
-                success=False,
-                error=f"Failed to write {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        success=False,
+                        error=f"Failed to write {path}",
+                    ),
+                )
+            )
             continue
 
-        results.append((name, StepResult(
-            message=f"Added {ip} to {path}",
-        )))
+        results.append(
+            (
+                name,
+                StepResult(
+                    message=f"Added {ip} to {path}",
+                ),
+            )
+        )
 
     # Update cache with new IP
     cached = load_cached_ips()
@@ -365,10 +412,15 @@ def remove_restricted_ip(
         List of (target_name, StepResult) tuples.
     """
     if ip == "127.0.0.1":
-        return [("", StepResult(
-            success=False,
-            error="Cannot remove 127.0.0.1 (localhost must always be allowed)",
-        ))]
+        return [
+            (
+                "",
+                StepResult(
+                    success=False,
+                    error="Cannot remove 127.0.0.1 (localhost must always be allowed)",
+                ),
+            )
+        ]
 
     targets = get_applicable_targets(server_type)
     results: list[tuple[str, StepResult]] = []
@@ -378,40 +430,65 @@ def remove_restricted_ip(
         name = target["name"]
 
         if not file_exists(path):
-            results.append((name, StepResult(
-                skipped=True,
-                message=f"No .htaccess at {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        skipped=True,
+                        message=f"No .htaccess at {path}",
+                    ),
+                )
+            )
             continue
 
         if not is_nssec_managed(path):
-            results.append((name, StepResult(
-                skipped=True,
-                message=f"Skipping unmanaged {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        skipped=True,
+                        message=f"Skipping unmanaged {path}",
+                    ),
+                )
+            )
             continue
 
         current_ips = parse_htaccess_ips(path)
         if ip not in current_ips:
-            results.append((name, StepResult(
-                skipped=True,
-                message=f"{ip} not found in {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        skipped=True,
+                        message=f"{ip} not found in {path}",
+                    ),
+                )
+            )
             continue
 
         new_ips = [existing for existing in current_ips if existing != ip]
         backup_file(path)
         content = _render_htaccess(target, new_ips)
         if not write_file(path, content):
-            results.append((name, StepResult(
-                success=False,
-                error=f"Failed to write {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        success=False,
+                        error=f"Failed to write {path}",
+                    ),
+                )
+            )
             continue
 
-        results.append((name, StepResult(
-            message=f"Removed {ip} from {path}",
-        )))
+        results.append(
+            (
+                name,
+                StepResult(
+                    message=f"Removed {ip} from {path}",
+                ),
+            )
+        )
 
     # Update cache — remove this IP
     cached = load_cached_ips()
@@ -439,10 +516,15 @@ def reapply_restrictions(
     """
     cached_ips = load_cached_ips()
     if not cached_ips:
-        return [("", StepResult(
-            skipped=True,
-            message=f"No cached IPs found in {RESTRICT_CACHE_PATH} (run init first)",
-        ))]
+        return [
+            (
+                "",
+                StepResult(
+                    skipped=True,
+                    message=f"No cached IPs found in {RESTRICT_CACHE_PATH} (run init first)",
+                ),
+            )
+        ]
 
     # Ensure 127.0.0.1 is first
     ips = ["127.0.0.1"] + [ip for ip in cached_ips if ip != "127.0.0.1"]
@@ -451,10 +533,15 @@ def reapply_restrictions(
     results: list[tuple[str, StepResult]] = []
 
     if not targets:
-        results.append(("", StepResult(
-            skipped=True,
-            message="No applicable targets found for this server type",
-        )))
+        results.append(
+            (
+                "",
+                StepResult(
+                    skipped=True,
+                    message="No applicable targets found for this server type",
+                ),
+            )
+        )
         return results
 
     for target in targets:
@@ -462,9 +549,14 @@ def reapply_restrictions(
         name = target["name"]
 
         if dry_run:
-            results.append((name, StepResult(
-                message=f"Would write {path} with {len(ips)} cached IP(s)",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        message=f"Would write {path} with {len(ips)} cached IP(s)",
+                    ),
+                )
+            )
             continue
 
         if file_exists(path):
@@ -472,14 +564,24 @@ def reapply_restrictions(
 
         content = _render_htaccess(target, ips)
         if not write_file(path, content):
-            results.append((name, StepResult(
-                success=False,
-                error=f"Failed to write {path}",
-            )))
+            results.append(
+                (
+                    name,
+                    StepResult(
+                        success=False,
+                        error=f"Failed to write {path}",
+                    ),
+                )
+            )
             continue
 
-        results.append((name, StepResult(
-            message=f"Restored {path} with {len(ips)} cached IP(s)",
-        )))
+        results.append(
+            (
+                name,
+                StepResult(
+                    message=f"Restored {path} with {len(ips)} cached IP(s)",
+                ),
+            )
+        )
 
     return results

@@ -45,7 +45,7 @@ pip install -e .
 |----|-------------------|--------|
 | Ubuntu 24.04 LTS | v44.x | Tested |
 | Ubuntu 22.04 LTS | v44.x | Tested |
-| Ubuntu 20.04 LTS | v44.x | Binary/.deb only |
+| Ubuntu 20.04 LTS | v44.x | Source Only |
 
 Other Debian-based distributions may work but are untested. Contributions and test reports for additional platforms are welcome.
 
@@ -97,8 +97,10 @@ sudo nssec waf enable
 
 The WAF module includes:
 - OWASP CRS v4 with paranoia level 1 (low false positive rate)
-- NetSapiens exclusion rules for admin UI, ns-api, SiPbx, NqsProxy, and iNSight health checks
+- NetSapiens exclusion rules for admin UI, ns-api, SiPbx, NqsProxy, portal login, phone provisioning, iNSight health checks, and localhost traffic
 - CRS tuning for allowed HTTP methods and content types used by NetSapiens
+
+WAF rule templates (exclusions and CRS setup overrides) are defined in `src/nssec/modules/waf/config.py` and deployed to `/etc/modsecurity/` by `nssec waf init`.
 
 ### Path Restrictions (.htaccess)
 
@@ -167,24 +169,21 @@ Start with `standard` and review the Apache API Usage dashboard and mod_evasive 
 
 | Component | Core | NDP | Recording | QoS |
 |-----------|:----:|:---:|:---------:|:---:|
-| WAF — Admin UI | Yes | — | — | — |
-| WAF — Endpoints | — | Yes | — | — |
-| WAF — Large Upload | — | — | Yes | — |
+| WAF | Yes | Yes | Yes | Yes |
 | mTLS Provisioning | — | Yes | — | — |
-| MySQL Hardening | Yes | — | — | — |
+| MySQL Hardening | Yes | Yes | Yes | Yes |
 
-## Grafana Dashboards & Insight Templates
+## iNSight Templates
 
-Pre-built dashboards are available for import into your Grafana/iNSight instance:
+Pre-built dashboards for import into your iNSight/Grafana instance (`insight/`):
 
-**Dashboards** (`dashboards/`):
-- `security/apacheHttpServerLogs.json` — Apache error and access logs with HTTP status breakdown
-
-**Insight Templates** (`insight/`):
 - `api.json` — API v1/v2 request rate monitoring (Prometheus)
 - `apacheApiUsage.json` — Apache access log analysis by IP and path (Loki)
 - `modsecurityWaf.json` — ModSecurity WAF event analysis: severity, attacking IPs, triggered rules, targeted URIs (Loki)
 - `modEvasive.json` — mod_evasive HTTP flood protection: blocked IPs, block rate, repeat offenders (Loki)
+- `sshLogin.json` — SSH login monitor: failed/successful logins, brute-force source IPs, targeted usernames (Loki)
+
+![WAF iNSight Dashboard](docs/img/waf-insight.png)
 
 ## Related Projects
 

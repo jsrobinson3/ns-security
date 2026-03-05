@@ -1,7 +1,8 @@
 """Shared pytest fixtures for nssec tests."""
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture
@@ -18,11 +19,11 @@ def mock_file_ops():
 
     Patches at the point of use (nssec.modules.waf) not definition (utils).
     """
-    with patch("nssec.modules.waf.file_exists") as exists, \
-         patch("nssec.modules.waf.read_file") as read, \
-         patch("nssec.modules.waf.write_file") as write, \
-         patch("nssec.modules.waf.backup_file") as backup, \
-         patch("nssec.modules.waf.render") as render_mock:
+    with patch("nssec.modules.waf.file_exists") as exists, patch(
+        "nssec.modules.waf.read_file"
+    ) as read, patch("nssec.modules.waf.write_file") as write, patch(
+        "nssec.modules.waf.backup_file"
+    ) as backup, patch("nssec.modules.waf.render") as render_mock:
         exists.return_value = True
         read.return_value = ""
         write.return_value = True
@@ -55,4 +56,5 @@ def mock_preflight():
 def cli_runner():
     """Click CLI test runner."""
     from click.testing import CliRunner
+
     return CliRunner()

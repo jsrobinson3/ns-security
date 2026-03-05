@@ -1,7 +1,5 @@
 """Tests for WAF status reporting."""
 
-import pytest
-from unittest.mock import patch, MagicMock
 from jinja2 import Template
 
 

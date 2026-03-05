@@ -2,8 +2,6 @@
 
 from unittest.mock import patch
 
-import pytest
-
 
 class TestVersionGte:
     """Tests for version_gte helper."""
@@ -158,9 +156,9 @@ class TestAppendCrsToSecurity2:
             written["content"] = content
             return True
 
-        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), \
-             patch("nssec.modules.waf.utils.backup_file"), \
-             patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
+        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), patch(
+            "nssec.modules.waf.utils.backup_file"
+        ), patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
             result = append_crs_to_security2("/etc/modsecurity/crs")
 
         assert result is True
@@ -179,9 +177,9 @@ class TestAppendCrsToSecurity2:
             written["content"] = content
             return True
 
-        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), \
-             patch("nssec.modules.waf.utils.backup_file"), \
-             patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
+        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), patch(
+            "nssec.modules.waf.utils.backup_file"
+        ), patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
             append_crs_to_security2("/etc/modsecurity/crs")
 
         content = written["content"]
@@ -205,18 +203,19 @@ class TestAppendCrsToSecurity2:
             written["content"] = content
             return True
 
-        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), \
-             patch("nssec.modules.waf.utils.backup_file"), \
-             patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
+        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), patch(
+            "nssec.modules.waf.utils.backup_file"
+        ), patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
             append_crs_to_security2("/etc/modsecurity/crs")
 
         content = written["content"]
         # The modsecurity/*.conf line should remain active (not commented)
         active_lines = [
-            l.strip() for l in content.splitlines()
-            if not l.strip().startswith("#") and l.strip()
+            line.strip()
+            for line in content.splitlines()
+            if not line.strip().startswith("#") and line.strip()
         ]
-        assert any("/etc/modsecurity/*.conf" in l for l in active_lines)
+        assert any("/etc/modsecurity/*.conf" in line for line in active_lines)
 
     def test_does_not_comment_out_already_commented_lines(self):
         """Should not double-comment already commented CRS lines."""
@@ -235,9 +234,9 @@ class TestAppendCrsToSecurity2:
             written["content"] = content
             return True
 
-        with patch("nssec.modules.waf.utils.read_file", return_value=content_with_comment), \
-             patch("nssec.modules.waf.utils.backup_file"), \
-             patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
+        with patch("nssec.modules.waf.utils.read_file", return_value=content_with_comment), patch(
+            "nssec.modules.waf.utils.backup_file"
+        ), patch("nssec.modules.waf.utils.write_file", side_effect=capture_write):
             append_crs_to_security2("/etc/modsecurity/crs")
 
         content = written["content"]
@@ -247,9 +246,9 @@ class TestAppendCrsToSecurity2:
     def test_returns_false_on_write_failure(self):
         from nssec.modules.waf.utils import append_crs_to_security2
 
-        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), \
-             patch("nssec.modules.waf.utils.backup_file"), \
-             patch("nssec.modules.waf.utils.write_file", return_value=False):
+        with patch("nssec.modules.waf.utils.read_file", return_value=DEBIAN_DEFAULT_SEC2), patch(
+            "nssec.modules.waf.utils.backup_file"
+        ), patch("nssec.modules.waf.utils.write_file", return_value=False):
             result = append_crs_to_security2("/etc/modsecurity/crs")
 
         assert result is False

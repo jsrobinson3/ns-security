@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -25,10 +24,10 @@ class PreflightResult:
     apache_running: bool = False
     modsec_installed: bool = False
     modsec_enabled: bool = False
-    modsec_mode: Optional[str] = None
+    modsec_mode: str | None = None
     crs_installed: bool = False
-    crs_version: Optional[str] = None
-    crs_path: Optional[str] = None
+    crs_version: str | None = None
+    crs_path: str | None = None
     security2_has_wildcard: bool = False
     security2_has_crs_load: bool = False
     errors: list[str] = field(default_factory=list)

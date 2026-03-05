@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 from nssec.core.checklist import run_command
 
@@ -144,7 +143,7 @@ NS_SERVICES = [
 ]
 
 
-def _run_command(cmd: list[str], timeout: int = 10) -> Optional[str]:
+def _run_command(cmd: list[str], timeout: int = 10) -> str | None:
     """Run a command and return stdout, or None on error.
 
     This is a convenience wrapper around run_command from checklist.py
@@ -352,7 +351,7 @@ def get_server_info() -> dict:
     }
 
 
-def get_applicable_security_modules(server_type: Optional[ServerType] = None) -> list[str]:
+def get_applicable_security_modules(server_type: ServerType | None = None) -> list[str]:
     """Get security modules applicable to this server type.
 
     Args:

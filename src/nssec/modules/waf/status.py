@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from nssec.modules.waf.config import (
     CRS_RULES_REQUIRE_296,
@@ -17,7 +16,6 @@ from nssec.modules.waf.config import (
     MODSEC_PACKAGE,
     NS_EXCLUSIONS_CONF,
     NS_EXCLUSIONS_HASH,
-    NS_EXCLUSIONS_VERSION,
     SECURITY2_CONF,
     SECURITY2_LOAD,
 )
@@ -27,25 +25,25 @@ from nssec.modules.waf.config import (
 class WafStatus:
     """Current state of ModSecurity / CRS."""
 
-    apache_version: Optional[str] = None
+    apache_version: str | None = None
     apache_ppa: bool = False
     modsec_installed: bool = False
     modsec_enabled: bool = False
-    modsec_mode: Optional[str] = None
+    modsec_mode: str | None = None
     crs_installed: bool = False
-    crs_version: Optional[str] = None
-    crs_path: Optional[str] = None
+    crs_version: str | None = None
+    crs_path: str | None = None
     crs_setup_present: bool = False
     evasive_installed: bool = False
     evasive_enabled: bool = False
     exclusions_present: bool = False
-    exclusions_version: Optional[str] = None
+    exclusions_version: str | None = None
     exclusions_current: bool = False
     exclusions_included: bool = False
     crs_path_valid: bool = False
     exclusions_admin_ips: int = 0
     exclusions_nodeping_ips: int = 0
-    modsec_version: Optional[str] = None
+    modsec_version: str | None = None
     disabled_crs_rules: int = 0
     audit_log_exists: bool = False
     recent_log_lines: list[str] = field(default_factory=list)
@@ -66,7 +64,7 @@ def _pkg_installed(package: str) -> bool:
         return False
 
 
-def _get_pkg_version(package: str) -> Optional[str]:
+def _get_pkg_version(package: str) -> str | None:
     """Get the upstream version of an installed deb package."""
     import subprocess
 
@@ -96,7 +94,7 @@ def _is_ondrej_apache_ppa() -> bool:
     return any(glob.glob(p) for p in patterns)
 
 
-def _read_file(path: str) -> Optional[str]:
+def _read_file(path: str) -> str | None:
     try:
         return Path(path).read_text()
     except (OSError, PermissionError):
@@ -114,7 +112,7 @@ def _tail_file(path: str, lines: int = 10) -> list[str]:
         return []
 
 
-def _parse_security2_crs_path(content: str) -> Optional[str]:
+def _parse_security2_crs_path(content: str) -> str | None:
     """Extract the CRS path referenced in security2.conf."""
     match = re.search(r"IncludeOptional\s+(\S+)/crs-setup\.conf", content)
     if match:
@@ -122,7 +120,7 @@ def _parse_security2_crs_path(content: str) -> Optional[str]:
     return None
 
 
-def _parse_exclusions_meta(content: str) -> tuple[Optional[str], Optional[str], int, int]:
+def _parse_exclusions_meta(content: str) -> tuple[str | None, str | None, int, int]:
     """Parse exclusions file for version, hash, admin IP count, NodePing IP count."""
     version = None
     template_hash = None
@@ -171,8 +169,7 @@ def get_waf_status() -> WafStatus:
         rules_dir = Path(search_path) / "rules"
         if rules_dir.is_dir():
             status.disabled_crs_rules = sum(
-                1 for f in CRS_RULES_REQUIRE_296
-                if (rules_dir / (f + ".disabled")).exists()
+                1 for f in CRS_RULES_REQUIRE_296 if (rules_dir / (f + ".disabled")).exists()
             )
         break
 
@@ -203,9 +200,7 @@ def get_waf_status() -> WafStatus:
     if status.exclusions_present:
         excl_content = _read_file(NS_EXCLUSIONS_CONF)
         if excl_content:
-            version, deployed_hash, admin_count, np_count = _parse_exclusions_meta(
-                excl_content
-            )
+            version, deployed_hash, admin_count, np_count = _parse_exclusions_meta(excl_content)
             status.exclusions_version = version
             # Use hash for drift detection — automatically catches any template change
             status.exclusions_current = deployed_hash == NS_EXCLUSIONS_HASH

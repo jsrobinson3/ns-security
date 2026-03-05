@@ -154,13 +154,17 @@ def _build_status_table(status):
             table.add_row("CRS path", status.crs_path)
         setup_val = _yn(status.crs_setup_present)
         if not status.crs_setup_present:
-            setup_val += " [red](rule 901001 will flag all traffic! run [cyan]nssec waf init[/cyan])[/red]"
+            setup_val += (
+                " [red](rule 901001 will flag all traffic! run [cyan]nssec waf init[/cyan])[/red]"
+            )
         table.add_row("crs-setup.conf", setup_val)
     else:
         table.add_row("OWASP CRS", "[red]not installed[/red]")
 
     if status.evasive_installed:
-        evasive_state = "[green]enabled[/green]" if status.evasive_enabled else "[yellow]disabled[/yellow]"
+        evasive_state = (
+            "[green]enabled[/green]" if status.evasive_enabled else "[yellow]disabled[/yellow]"
+        )
         table.add_row("mod_evasive", evasive_state)
     else:
         table.add_row("mod_evasive", "[dim]not installed[/dim]")
@@ -181,11 +185,10 @@ def _build_status_table(status):
         elif not status.exclusions_current:
             v = status.exclusions_version or "unknown"
             excl_val = (
-                f"[yellow]outdated (v{v})[/yellow] — "
-                "run [cyan]nssec waf update-exclusions[/cyan]"
+                f"[yellow]outdated (v{v})[/yellow] — run [cyan]nssec waf update-exclusions[/cyan]"
             )
         else:
-            excl_val = "[green]active (v{})[/green]".format(status.exclusions_version)
+            excl_val = f"[green]active (v{status.exclusions_version})[/green]"
         table.add_row("NS exclusions", excl_val)
         if status.exclusions_admin_ips:
             table.add_row("  Admin IPs", str(status.exclusions_admin_ips))
@@ -301,9 +304,7 @@ def waf_enable(yes):
     if result.success:
         console.print(f"[green]{result.message}[/green]")
         console.print()
-        console.print(
-            "[bold]Tip:[/bold] To also enable HTTP flood protection, run:"
-        )
+        console.print("[bold]Tip:[/bold] To also enable HTTP flood protection, run:")
         console.print("  [cyan]sudo nssec waf evasive enable[/cyan]")
     else:
         console.print(f"[red]Error: {result.error}[/red]")
@@ -350,10 +351,9 @@ def waf_remove(yes):
     This disables the security2 module in Apache, effectively turning off
     the WAF completely. Use 'nssec waf init' to re-enable.
     """
-    from nssec.modules.waf import ModSecurityInstaller
-    from nssec.modules.waf.utils import run_cmd, file_exists
-    from nssec.modules.waf.config import SECURITY2_LOAD
     from nssec.core.ssh import is_root
+    from nssec.modules.waf.config import SECURITY2_LOAD
+    from nssec.modules.waf.utils import file_exists, run_cmd
 
     if not is_root():
         console.print("[red]Error: Must run as root (sudo nssec waf remove)[/red]")
@@ -469,7 +469,6 @@ def waf_update(yes):
     rules that were disabled during init and validates the Apache config.
     """
     from nssec.modules.waf import ModSecurityInstaller
-    from nssec.modules.waf.utils import detect_modsec_version, version_gte
     from nssec.modules.waf.config import (
         CRS_INSTALL_DIR,
         DIGITALWAVE_KEY_URL,
@@ -477,6 +476,7 @@ def waf_update(yes):
         DIGITALWAVE_LIST,
         DIGITALWAVE_REPO_URL,
     )
+    from nssec.modules.waf.utils import detect_modsec_version, version_gte
 
     installer = ModSecurityInstaller()
     pf = installer.preflight()
@@ -487,9 +487,7 @@ def waf_update(yes):
 
     if not version_gte(current_ver, "2.9.6"):
         console.print()
-        console.print(
-            "[yellow]ModSecurity < 2.9.6 — some CRS v4 rules are disabled.[/yellow]"
-        )
+        console.print("[yellow]ModSecurity < 2.9.6 — some CRS v4 rules are disabled.[/yellow]")
         console.print(
             "Ubuntu 22.04 ships ModSecurity 2.9.5 which lacks support for "
             "multipart rules introduced in 2.9.6."
@@ -499,8 +497,7 @@ def waf_update(yes):
         console.print()
         keyring = DIGITALWAVE_KEYRING
         console.print(
-            f"  [cyan]curl -fsSL {DIGITALWAVE_KEY_URL} "
-            f"| sudo gpg --dearmor -o {keyring}[/cyan]"
+            f"  [cyan]curl -fsSL {DIGITALWAVE_KEY_URL} | sudo gpg --dearmor -o {keyring}[/cyan]"
         )
         console.print()
         # Escape square brackets so Rich doesn't treat [signed-by=...] as markup
@@ -508,17 +505,14 @@ def waf_update(yes):
         repo = DIGITALWAVE_REPO_URL
         lst = DIGITALWAVE_LIST
         console.print(
-            f'  [cyan]echo "deb {signed} {repo} $(lsb_release -sc) main" '
-            f"| sudo tee {lst}[/cyan]"
+            f'  [cyan]echo "deb {signed} {repo} $(lsb_release -sc) main" | sudo tee {lst}[/cyan]'
         )
         console.print(
             f'  [cyan]echo "deb {signed} {repo} $(lsb_release -sc)-backports main" '
             f"| sudo tee -a {lst}[/cyan]"
         )
         console.print()
-        console.print(
-            "  [cyan]sudo apt-get update[/cyan]"
-        )
+        console.print("  [cyan]sudo apt-get update[/cyan]")
         console.print(
             "  [cyan]sudo apt-get install -t $(lsb_release -sc)-backports "
             "libapache2-mod-security2[/cyan]"
@@ -534,12 +528,13 @@ def waf_update(yes):
     crs_path = pf.crs_path or CRS_INSTALL_DIR
     reenabled = installer._reenable_crs_rules(crs_path)
     if not reenabled:
-        console.print("[green]ModSecurity >= 2.9.6 and all CRS rules are active. Nothing to do.[/green]")
+        console.print(
+            "[green]ModSecurity >= 2.9.6 and all CRS rules are active. Nothing to do.[/green]"
+        )
         return
 
     console.print(
-        f"  [green]Done:[/green] Re-enabled {len(reenabled)} CRS rule(s): "
-        + ", ".join(reenabled)
+        f"  [green]Done:[/green] Re-enabled {len(reenabled)} CRS rule(s): " + ", ".join(reenabled)
     )
 
     val = installer.validate_config()
@@ -593,7 +588,7 @@ def waf_allowlist_add(ip, yes):
     IP can be a single address (192.168.1.1) or CIDR notation (10.0.0.0/8).
     Allowlisted IPs bypass OWASP CRS rules for reduced false positives.
     """
-    from nssec.modules.waf import ModSecurityInstaller, get_allowlisted_ips, add_allowlisted_ip
+    from nssec.modules.waf import ModSecurityInstaller, add_allowlisted_ip, get_allowlisted_ips
 
     installer = ModSecurityInstaller()
     pf = installer.preflight()
@@ -678,7 +673,7 @@ def waf_evasive(ctx):
     "--profile",
     type=click.Choice(["standard", "strict"]),
     default="standard",
-    help="Threshold profile: standard (high thresholds, safe default) or strict (tuned for NS traffic)",
+    help="Threshold profile: standard (safe default) or strict (tuned for NS traffic)",
 )
 def waf_evasive_enable(yes, profile):
     """Enable mod_evasive HTTP flood protection.
@@ -708,15 +703,12 @@ def waf_evasive_enable(yes, profile):
         raise SystemExit(1)
 
     if not package_installed(EVASIVE_PACKAGE):
-        console.print(
-            "[red]Error: mod_evasive is not installed. "
-            "Run 'nssec waf init' first.[/red]"
-        )
+        console.print("[red]Error: mod_evasive is not installed. Run 'nssec waf init' first.[/red]")
         raise SystemExit(1)
 
     thresholds = EVASIVE_PROFILES[profile]
     console.print(
-        f"[bold yellow]Warning:[/bold yellow] mod_evasive has no detection-only mode. "
+        "[bold yellow]Warning:[/bold yellow] mod_evasive has no detection-only mode. "
         "When enabled it [bold]will block[/bold] IPs that exceed thresholds (HTTP 403)."
     )
     console.print(f"  Profile:          [cyan]{profile}[/cyan]")
@@ -756,8 +748,8 @@ def waf_evasive_enable(yes, profile):
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
 def waf_evasive_disable(yes):
     """Disable mod_evasive HTTP flood protection."""
-    from nssec.modules.waf import ModSecurityInstaller
     from nssec.core.ssh import is_root
+    from nssec.modules.waf import ModSecurityInstaller
 
     if not is_root():
         console.print("[red]Error: Must run as root (sudo nssec waf evasive disable)[/red]")
@@ -824,9 +816,7 @@ def waf_evasive_status():
         console.print(f"  Profile:    [cyan]{profile}[/cyan]")
 
     if not enabled:
-        console.print(
-            "\n  Enable with: [cyan]sudo nssec waf evasive enable[/cyan]"
-        )
+        console.print("\n  Enable with: [cyan]sudo nssec waf evasive enable[/cyan]")
 
 
 # ─── RESTRICT SUBCOMMANDS ───
@@ -916,7 +906,9 @@ def waf_restrict_show():
         console.print("  Run [cyan]nssec waf restrict reapply[/cyan] after NS upgrades to restore")
     elif first_ips_managed:
         console.print("\n[bold]IP cache:[/bold] [yellow]not saved[/yellow]")
-        console.print("  Run [cyan]nssec waf restrict init[/cyan] to save IPs for reapply after upgrades")
+        console.print(
+            "  Run [cyan]nssec waf restrict init[/cyan] to save IPs for reapply after upgrades"
+        )
 
 
 @waf_restrict.command("init")
@@ -940,9 +932,9 @@ def waf_restrict_init(ips, dry_run, yes):
     """
     import ipaddress
 
-    from nssec.core.ssh import is_root
     from nssec.core.server_types import detect_server_type
-    from nssec.modules.waf.restrict import init_restrictions, collect_existing_ips
+    from nssec.core.ssh import is_root
+    from nssec.modules.waf.restrict import collect_existing_ips, init_restrictions
 
     if not is_root():
         console.print("[red]Error: Must run as root (sudo nssec waf restrict init)[/red]")
@@ -974,9 +966,7 @@ def waf_restrict_init(ips, dry_run, yes):
             "[bold]Enter IP addresses to allow access[/bold] "
             "(one per line, or space/comma separated)."
         )
-        console.print(
-            "  Include NetSapiens TAC IPs and your admin office IPs."
-        )
+        console.print("  Include NetSapiens TAC IPs and your admin office IPs.")
         console.print("  127.0.0.1 is always included automatically.")
         console.print("  Press Enter on a blank line when done.")
         console.print()
@@ -1010,8 +1000,9 @@ def waf_restrict_init(ips, dry_run, yes):
     console.print()
 
     if dry_run:
-        results = init_restrictions(server_type, ip_list, dry_run=True,
-                                    merge_existing=merge_existing)
+        results = init_restrictions(
+            server_type, ip_list, dry_run=True, merge_existing=merge_existing
+        )
         for name, result in results:
             label = f"[cyan]{name}:[/cyan] " if name else ""
             console.print(f"  {label}{result.message}")
@@ -1022,8 +1013,7 @@ def waf_restrict_init(ips, dry_run, yes):
         console.print("[yellow]Aborted.[/yellow]")
         return
 
-    results = init_restrictions(server_type, ip_list,
-                                merge_existing=merge_existing)
+    results = init_restrictions(server_type, ip_list, merge_existing=merge_existing)
     any_error = False
     for name, result in results:
         label = f"[cyan]{name}:[/cyan] " if name else ""
@@ -1051,8 +1041,8 @@ def waf_restrict_add(ip, yes):
     """
     import ipaddress
 
-    from nssec.core.ssh import is_root
     from nssec.core.server_types import detect_server_type
+    from nssec.core.ssh import is_root
     from nssec.modules.waf.restrict import add_restricted_ip
 
     if not is_root():
@@ -1097,8 +1087,8 @@ def waf_restrict_remove(ip, yes):
 
     Cannot remove 127.0.0.1 (localhost is always required).
     """
-    from nssec.core.ssh import is_root
     from nssec.core.server_types import detect_server_type
+    from nssec.core.ssh import is_root
     from nssec.modules.waf.restrict import remove_restricted_ip
 
     if not is_root():
@@ -1139,9 +1129,9 @@ def waf_restrict_reapply(dry_run, yes):
     Reads the saved IP list from /etc/nssec/restrict-ips.json and
     re-creates all managed .htaccess files.
     """
-    from nssec.core.ssh import is_root
     from nssec.core.server_types import detect_server_type
-    from nssec.modules.waf.restrict import reapply_restrictions, load_cached_ips
+    from nssec.core.ssh import is_root
+    from nssec.modules.waf.restrict import load_cached_ips, reapply_restrictions
 
     if not is_root():
         console.print("[red]Error: Must run as root (sudo nssec waf restrict reapply)[/red]")

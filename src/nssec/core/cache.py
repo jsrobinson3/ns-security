@@ -22,14 +22,13 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Union
 
 from nssec.core import ssh
 
 
 def _remove_suffix(text: str, suffix: str) -> str:
     """Remove suffix from string (Python 3.8 compatible)."""
-    return text[:-len(suffix)] if suffix and text.endswith(suffix) else text
+    return text[: -len(suffix)] if suffix and text.endswith(suffix) else text
 
 
 def _run_subprocess(cmd: list[str], timeout: int = 30) -> tuple[str, int]:
@@ -46,7 +45,7 @@ def _run_subprocess(cmd: list[str], timeout: int = 30) -> tuple[str, int]:
     return stdout, rc
 
 
-def _parse_dpkg_line(line: str) -> Optional[str]:
+def _parse_dpkg_line(line: str) -> str | None:
     """Parse a dpkg -l output line to extract package name if installed.
 
     Args:
@@ -64,7 +63,7 @@ def _parse_dpkg_line(line: str) -> Optional[str]:
     return parts[1].split(":")[0]
 
 
-def _parse_service_line(line: str) -> tuple[Optional[str], Optional[str]]:
+def _parse_service_line(line: str) -> tuple[str | None, str | None]:
     """Parse a systemctl list-units output line to extract service names.
 
     Args:
@@ -99,7 +98,7 @@ def _read_ufw_files() -> str:
     return content
 
 
-def _safe_read_file(path: Union[str, Path]) -> Optional[str]:
+def _safe_read_file(path: str | Path) -> str | None:
     """Safely read a file, returning None on any error (locally or via SSH).
 
     Args:
@@ -138,15 +137,15 @@ class SessionCache:
         self._dpkg_time: float = 0
 
         # Service (systemctl) cache
-        self._active_services: Optional[set[str]] = None
+        self._active_services: set[str] | None = None
         self._services_time: float = 0
 
         # File content cache
-        self._files: dict[str, Optional[str]] = {}
+        self._files: dict[str, str | None] = {}
         self._file_times: dict[str, float] = {}
 
         # UFW rules cache
-        self._ufw_rules: Optional[str] = None
+        self._ufw_rules: str | None = None
         self._ufw_rules_loaded: bool = False
         self._ufw_time: float = 0
 
@@ -286,7 +285,7 @@ class SessionCache:
                 or f"{normalized}.service" in self._active_services
             )
 
-    def cached_file_read(self, path: Union[str, Path]) -> Optional[str]:
+    def cached_file_read(self, path: str | Path) -> str | None:
         """Read file contents with caching.
 
         Caches file contents by path. Subsequent reads return cached content
@@ -306,7 +305,7 @@ class SessionCache:
                 return content
             return self._load_and_cache_file(path, path_str)
 
-    def _get_valid_cached_file(self, path_str: str) -> tuple[bool, Optional[str]]:
+    def _get_valid_cached_file(self, path_str: str) -> tuple[bool, str | None]:
         """Get cached file content if valid and not expired.
 
         Args:
@@ -322,7 +321,7 @@ class SessionCache:
             return False, None
         return True, self._files[path_str]
 
-    def _load_and_cache_file(self, path: Union[str, Path], path_str: str) -> Optional[str]:
+    def _load_and_cache_file(self, path: str | Path, path_str: str) -> str | None:
         """Load a file and store it in cache (internal, called with lock held).
 
         Args:
@@ -338,7 +337,7 @@ class SessionCache:
         self._file_times[path_str] = time.time()
         return content
 
-    def cached_ufw_rules(self) -> Optional[str]:
+    def cached_ufw_rules(self) -> str | None:
         """Read UFW rules from config files with caching.
 
         Reads UFW rules from /etc/ufw/user.rules and /etc/ufw/user6.rules.
@@ -352,7 +351,7 @@ class SessionCache:
                 return self._ufw_rules
             return self._load_ufw_rules()
 
-    def _load_ufw_rules(self) -> Optional[str]:
+    def _load_ufw_rules(self) -> str | None:
         """Load UFW rules into cache (internal, called with lock held).
 
         Returns:
@@ -370,7 +369,7 @@ class SessionCache:
 
         return self._cache_ufw_result(None)
 
-    def _cache_ufw_result(self, content: Optional[str]) -> Optional[str]:
+    def _cache_ufw_result(self, content: str | None) -> str | None:
         """Store UFW result in cache and return it.
 
         Args:
@@ -433,7 +432,7 @@ def cached_service_active(service_name: str) -> bool:
     return session_cache.cached_service_active(service_name)
 
 
-def cached_file_read(path: Union[str, Path]) -> Optional[str]:
+def cached_file_read(path: str | Path) -> str | None:
     """Read file contents with caching (uses session cache).
 
     This is a convenience wrapper around session_cache.cached_file_read().
@@ -447,7 +446,7 @@ def cached_file_read(path: Union[str, Path]) -> Optional[str]:
     return session_cache.cached_file_read(path)
 
 
-def cached_ufw_rules() -> Optional[str]:
+def cached_ufw_rules() -> str | None:
     """Read UFW rules with caching (uses session cache).
 
     This is a convenience wrapper around session_cache.cached_ufw_rules().
