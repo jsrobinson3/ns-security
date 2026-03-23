@@ -209,14 +209,24 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # These rules prevent false positives on the NetSapiens management UI
 # and API endpoints while keeping CRS protection active for everything else.
 
-# ---- Admin UI form submissions trigger SQL injection false positives ----
-SecRuleUpdateTargetById 942100 "!REQUEST_COOKIES"
-SecRuleUpdateTargetById 942200 "!REQUEST_COOKIES"
-
-# ---- Third-party tracking cookies trigger RCE false positives ----
-# Reddit (_rdt_*), Google (_ga, _gid), Facebook (_fbp) etc. use delimiters
-# that match shell patterns like ~N (directory stack) or command separators.
-SecRuleUpdateTargetById 932270 "!REQUEST_COOKIES"
+# ---- Admin UI form submissions and third-party tracking cookies ----
+# Cookies from admin UI sessions trigger SQL injection false positives (942100,
+# 942200).  Reddit (_rdt_*), Google (_ga, _gid), Facebook (_fbp) etc. use
+# delimiters that match shell patterns like ~N (directory stack), triggering
+# RCE false positives (932270).
+#
+# Uses runtime ctl:ruleRemoveTargetById so this works regardless of whether
+# the exclusions file loads before or after the CRS rules (e.g. when the
+# default Debian wildcard IncludeOptional /etc/modsecurity/*.conf picks up
+# this file alphabetically before the CRS rules are loaded).
+SecAction \
+    "id:1000009,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=942100;REQUEST_COOKIES,\\
+     ctl:ruleRemoveTargetById=942200;REQUEST_COOKIES,\\
+     ctl:ruleRemoveTargetById=932270;REQUEST_COOKIES"
 
 # ---- NS API endpoints use base64 in query strings ----
 SecRule REQUEST_URI "@beginsWith /ns-api/" \\
