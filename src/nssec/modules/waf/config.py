@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "3"
+NS_EXCLUSIONS_VERSION = "4"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -282,6 +282,20 @@ SecRule REQUEST_URI "@beginsWith /portal/login/login" \\
      pass,\\
      nolog,\\
      ctl:ruleRemoveTargetById=932270;ARGS:data[Login][password]"
+
+# ---- Portal paths with domain names in URL segments ----
+# NetSapiens portal URLs embed tenant domain names as path segments, e.g.:
+#   /portal/stats/billable/example.com
+#   /portal/users/mask/user@example.com
+# Rule 920440 interprets the TLD (.com, .net, .org) as a restricted file
+# extension.  These are not file downloads — suppress 920440 for all /portal/
+# paths.
+SecRule REQUEST_URI "@beginsWith /portal/" \\
+    "id:1000010,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveById=920440"
 
 # ---- iNSight health checks ----
 SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
