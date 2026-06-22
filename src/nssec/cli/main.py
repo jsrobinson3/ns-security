@@ -4,7 +4,7 @@ import click
 from rich.table import Table
 
 from nssec import __version__
-from nssec.cli import ALLOWED_CONFIG_DIRS, console, validate_path
+from nssec.cli import ALLOWED_CONFIG_DIRS, console, sudo_hint, validate_path
 from nssec.core.server_types import (
     Runtime,
     ServerType,
@@ -183,7 +183,10 @@ def init(config_dir):
         console.print(f"\n[green]Configuration created at {config_path}/config.yaml[/green]")
     except PermissionError:
         console.print(
-            "\n[red]Error:[/red] Permission denied. Try running with sudo:\n  sudo nssec init"
+            f"\n[red]Error:[/red] Permission denied writing to {config_path}."
+            f"\n  Run with root privileges:\n    {sudo_hint('init')}"
+            "\n  Or write to a user-owned directory (no sudo needed):"
+            "\n    nssec init --config-dir ~/.config/nssec"
         )
     except Exception as e:
         console.print(f"\n[red]Error:[/red] {e}")

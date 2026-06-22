@@ -5,12 +5,44 @@ Shared utilities used by CLI sub-modules (audit, waf_commands, etc.).
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import click
 from rich.console import Console
 
 console = Console()
+
+
+def _running_in_venv() -> bool:
+    """Return True if nssec is running from a Python virtual environment."""
+    return sys.prefix != sys.base_prefix or "VIRTUAL_ENV" in os.environ
+
+
+def sudo_hint(command: str = "") -> str:
+    """Return the correct privileged invocation for an nssec subcommand.
+
+    When nssec is installed in a virtualenv, a plain ``sudo nssec ...`` fails
+    with ``sudo: nssec: command not found`` because the venv's bin directory is
+    not on root's PATH. In that case we preserve the caller's PATH into sudo's
+    environment so the venv ``nssec`` resolves. Outside a venv (pipx / system
+    install) the plain form works and is shown unchanged.
+
+    Accepts a bare subcommand ("waf init") or a legacy full string
+    ("sudo nssec waf init"), which is normalized -- so existing call sites that
+    pass the whole hint keep working.
+    """
+    sub = command.strip()
+    for prefix in ("sudo nssec", "nssec"):
+        if sub.startswith(prefix):
+            sub = sub[len(prefix) :].strip()
+            break
+    target = f"nssec {sub}".strip()
+    if _running_in_venv():
+        return f'sudo env "PATH=$PATH" {target}'
+    return f"sudo {target}"
+
 
 # Allowed directories for configuration files
 ALLOWED_CONFIG_DIRS = (

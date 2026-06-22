@@ -3,7 +3,7 @@
 import click
 from rich.table import Table
 
-from nssec.cli import console
+from nssec.cli import console, sudo_hint
 
 
 @click.group()
@@ -69,7 +69,7 @@ def _print_install_results(result):
 def _require_root_and_modsec(pf, command_hint):
     """Validate root access and ModSecurity installation. Exits on failure."""
     if not pf.is_root:
-        console.print(f"[red]Error: Must run as root ({command_hint})[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint(command_hint)})[/red]")
         raise SystemExit(1)
     if not pf.modsec_installed or not pf.modsec_enabled:
         console.print(
@@ -305,7 +305,7 @@ def waf_enable(yes):
         console.print(f"[green]{result.message}[/green]")
         console.print()
         console.print("[bold]Tip:[/bold] To also enable HTTP flood protection, run:")
-        console.print("  [cyan]sudo nssec waf evasive enable[/cyan]")
+        console.print(f"  [cyan]{sudo_hint('waf evasive enable')}[/cyan]")
     else:
         console.print(f"[red]Error: {result.error}[/red]")
         raise SystemExit(1)
@@ -356,7 +356,7 @@ def waf_remove(yes):
     from nssec.modules.waf.utils import file_exists, run_cmd
 
     if not is_root():
-        console.print("[red]Error: Must run as root (sudo nssec waf remove)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf remove')})[/red]")
         raise SystemExit(1)
 
     if not file_exists(SECURITY2_LOAD):
@@ -387,7 +387,7 @@ def waf_remove(yes):
 
     console.print()
     console.print("ModSecurity is now disabled. To re-enable, run:")
-    console.print("  [cyan]sudo nssec waf init[/cyan]")
+    console.print(f"  [cyan]{sudo_hint('waf init')}[/cyan]")
 
 
 @waf.command("update-exclusions")
@@ -699,7 +699,7 @@ def waf_evasive_enable(yes, profile):
     pf = installer.preflight()
 
     if not pf.is_root:
-        console.print("[red]Error: Must run as root (sudo nssec waf evasive enable)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf evasive enable')})[/red]")
         raise SystemExit(1)
 
     if not package_installed(EVASIVE_PACKAGE):
@@ -752,7 +752,7 @@ def waf_evasive_disable(yes):
     from nssec.modules.waf import ModSecurityInstaller
 
     if not is_root():
-        console.print("[red]Error: Must run as root (sudo nssec waf evasive disable)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf evasive disable')})[/red]")
         raise SystemExit(1)
 
     console.print(
@@ -816,7 +816,7 @@ def waf_evasive_status():
         console.print(f"  Profile:    [cyan]{profile}[/cyan]")
 
     if not enabled:
-        console.print("\n  Enable with: [cyan]sudo nssec waf evasive enable[/cyan]")
+        console.print(f"\n  Enable with: [cyan]{sudo_hint('waf evasive enable')}[/cyan]")
 
 
 # ─── RESTRICT SUBCOMMANDS ───
@@ -937,7 +937,7 @@ def waf_restrict_init(ips, dry_run, yes):
     from nssec.modules.waf.restrict import collect_existing_ips, init_restrictions
 
     if not is_root():
-        console.print("[red]Error: Must run as root (sudo nssec waf restrict init)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf restrict init')})[/red]")
         raise SystemExit(1)
 
     server_type = detect_server_type().value
@@ -1046,7 +1046,7 @@ def waf_restrict_add(ip, yes):
     from nssec.modules.waf.restrict import add_restricted_ip
 
     if not is_root():
-        console.print("[red]Error: Must run as root (sudo nssec waf restrict add)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf restrict add')})[/red]")
         raise SystemExit(1)
 
     # Validate IP
@@ -1092,7 +1092,7 @@ def waf_restrict_remove(ip, yes):
     from nssec.modules.waf.restrict import remove_restricted_ip
 
     if not is_root():
-        console.print("[red]Error: Must run as root (sudo nssec waf restrict remove)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf restrict remove')})[/red]")
         raise SystemExit(1)
 
     server_type = detect_server_type().value
@@ -1134,7 +1134,7 @@ def waf_restrict_reapply(dry_run, yes):
     from nssec.modules.waf.restrict import load_cached_ips, reapply_restrictions
 
     if not is_root():
-        console.print("[red]Error: Must run as root (sudo nssec waf restrict reapply)[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint('waf restrict reapply')})[/red]")
         raise SystemExit(1)
 
     cached_ips = load_cached_ips()
