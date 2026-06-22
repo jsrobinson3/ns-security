@@ -27,7 +27,19 @@ sudo apt install ./nssec_0.1.0_amd64.deb
 
 The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files (rules, dashboards, insight templates) to `/usr/share/nssec/`.
 
-### From source (requires Python 3.10+)
+### From source with pipx (recommended)
+
+`pipx` installs `nssec` into its own isolated environment but puts the launcher
+on the system `PATH`, so `sudo nssec ...` works without any extra steps:
+
+```bash
+git clone https://github.com/jsrobinson3/ns-security.git
+cd ns-security
+sudo apt install pipx -y
+pipx install .
+```
+
+### From source with a venv
 
 ```bash
 git clone https://github.com/jsrobinson3/ns-security.git
@@ -38,6 +50,20 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
 ```
+
+> **`sudo nssec` inside a venv:** privileged commands need root, but `sudo`
+> resets `PATH` and drops the activated venv's `bin/` directory — so
+> `sudo nssec init` fails with `sudo: nssec: command not found` even from an
+> active venv. Either install with `pipx` (above), or preserve your `PATH` into
+> sudo:
+>
+> ```bash
+> sudo env "PATH=$PATH" nssec init
+> ```
+>
+> nssec detects this case and prints the correct command in its own error
+> messages. Commands that only write to your user config (e.g.
+> `nssec init --config-dir ~/.config/nssec`) need no sudo at all.
 
 ### Tested On
 

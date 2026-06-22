@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from nssec.cli import console
+from nssec.cli import console, sudo_hint
 
 
 @click.group(invoke_without_command=True)
@@ -60,7 +60,7 @@ def nodeping_show():
     if not ips:
         console.print("[dim]No NodePing IPs currently configured.[/dim]")
         console.print("\nTo add NodePing IPs, run:")
-        console.print("  [cyan]sudo nssec mtls nodeping update[/cyan]")
+        console.print(f"  [cyan]{sudo_hint('mtls nodeping update')}[/cyan]")
         return
 
     _display_ip_list(ips, "NodePing IPs")
@@ -82,7 +82,7 @@ def nodeping_fetch():
     _display_ip_list(ips, "Available IPs")
 
     console.print("\n[dim]This was a dry run. To apply, run:[/dim]")
-    console.print("  [cyan]sudo nssec mtls nodeping update[/cyan]")
+    console.print(f"  [cyan]{sudo_hint('mtls nodeping update')}[/cyan]")
 
 
 def _require_root(command_path: str) -> None:
@@ -90,7 +90,7 @@ def _require_root(command_path: str) -> None:
     from nssec.core.ssh import is_root
 
     if not is_root():
-        console.print(f"[red]Error: Must run as root (sudo nssec mtls {command_path})[/red]")
+        console.print(f"[red]Error: Must run as root ({sudo_hint(f'mtls {command_path}')})[/red]")
         raise SystemExit(1)
 
 
@@ -225,7 +225,7 @@ def allowlist_show():
     if not entries:
         console.print("[dim]No IPs currently in allowlist.[/dim]")
         console.print("\nTo add an IP, run:")
-        console.print("  [cyan]sudo nssec mtls allowlist add <IP>[/cyan]")
+        console.print(f"  [cyan]{sudo_hint('mtls allowlist add <IP>')}[/cyan]")
         return
 
     manual = [e["ip"] for e in entries if not e["managed"]]
