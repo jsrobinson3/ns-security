@@ -822,8 +822,12 @@ def waf_evasive_status():
 # ─── RESTRICT SUBCOMMANDS ───
 
 
-def _validate_and_prompt_reload_for_restrict(yes):
-    """Run apache2ctl configtest then prompt for Apache reload."""
+def _validate_and_prompt_reload_for_restrict(yes) -> bool:
+    """Run apache2ctl configtest then prompt for Apache reload.
+
+    Returns True if Apache was reloaded, False if the reload was skipped.
+    Exits the process if configtest or the reload itself fails.
+    """
     from nssec.modules.waf.utils import run_cmd
 
     stdout, stderr, rc = run_cmd(["apache2ctl", "configtest"])
@@ -839,75 +843,70 @@ def _validate_and_prompt_reload_for_restrict(yes):
             console.print(f"  [red]Error:[/red] Apache reload failed: {stderr}")
             raise SystemExit(1)
         console.print("  [green]Done:[/green] Apache reloaded")
-    else:
-        console.print("[yellow]Skipped Apache reload. Run manually:[/yellow]")
-        console.print("  [cyan]sudo systemctl reload apache2[/cyan]")
+        return True
+
+    console.print("[yellow]Skipped Apache reload. Run manually:[/yellow]")
+    console.print("  [cyan]sudo systemctl reload apache2[/cyan]")
+    return False
 
 
 @waf.group("restrict", invoke_without_command=True)
 @click.pass_context
 def waf_restrict(ctx):
-    """Manage .htaccess IP restrictions for sensitive NetSapiens paths."""
+    """Manage admin-UI IP restrictions via an Apache config."""
     if ctx.invoked_subcommand is None:
         ctx.invoke(waf_restrict_show)
 
 
 @waf_restrict.command("show")
 def waf_restrict_show():
-    """Show .htaccess restriction status for each protected path."""
+    """Show the admin-UI IP restriction status."""
     from nssec.core.server_types import detect_server_type
     from nssec.modules.waf.restrict import get_restrict_status, load_cached_ips
 
     server_type = detect_server_type().value
-    statuses = get_restrict_status(server_type)
+    status = get_restrict_status(server_type)
 
-    if not statuses:
-        console.print("[dim]No applicable restriction targets for this server type.[/dim]")
+    if not status["segments"] and not status["legacy"]:
+        console.print("[dim]No applicable admin UIs for this server type.[/dim]")
         return
 
-    table = Table(title="Path Restrictions", show_header=True)
-    table.add_column("Target", style="cyan")
-    table.add_column("Path")
-    table.add_column("Status")
-    table.add_column("IPs", justify="right")
+    console.print(f"[bold]Restrict config:[/bold] {status['path']}")
+    if not status["exists"]:
+        state = "[red]not present[/red]"
+    elif status["managed"]:
+        state = "[green]managed[/green]"
+    else:
+        state = "[yellow]unmanaged (not created by nssec)[/yellow]"
+    console.print(f"[bold]Status:[/bold] {state}")
 
-    first_ips = None
-    first_ips_managed = False
-    for s in statuses:
-        if not s["exists"]:
-            status = "[red]missing[/red]"
-            ip_count = "-"
-        elif s["managed"]:
-            status = "[green]managed[/green]"
-            ip_count = str(len(s["ips"]))
-            if first_ips is None:
-                first_ips = s["ips"]
-                first_ips_managed = True
-        else:
-            status = "[yellow]unmanaged[/yellow]"
-            ip_count = str(len(s["ips"]))
-            if first_ips is None:
-                first_ips = s["ips"]
+    if status["segments"]:
+        console.print(f"[bold]Protected admin UIs:[/bold] {', '.join(status['components'])}")
+        console.print(f"  [dim]LocationMatch ^/({'|'.join(status['segments'])})/[/dim]")
 
-        table.add_row(s["name"], s["path"], status, ip_count)
-
-    console.print(table)
-
-    if first_ips:
-        label = "Allowed IPs" if first_ips_managed else "Existing IPs (unmanaged)"
-        console.print(f"\n[bold]{label}[/bold] ({len(first_ips)}):")
-        for ip in first_ips:
+    if status["ips"]:
+        console.print(f"\n[bold]Allowed IPs[/bold] ({len(status['ips'])}):")
+        for ip in status["ips"]:
             console.print(f"  {ip}")
 
-    # Show cache status
     cached = load_cached_ips()
     if cached:
         console.print(f"\n[bold]IP cache:[/bold] [green]{len(cached)} IP(s) saved[/green]")
-        console.print("  Run [cyan]nssec waf restrict reapply[/cyan] after NS upgrades to restore")
-    elif first_ips_managed:
+        console.print("  Run [cyan]nssec waf restrict reapply[/cyan] to restore after an upgrade")
+    elif status["managed"]:
         console.print("\n[bold]IP cache:[/bold] [yellow]not saved[/yellow]")
         console.print(
             "  Run [cyan]nssec waf restrict init[/cyan] to save IPs for reapply after upgrades"
+        )
+
+    if status["legacy"]:
+        console.print(
+            f"\n[yellow]Legacy .htaccess files still present[/yellow] ({len(status['legacy'])}):"
+        )
+        for path in status["legacy"]:
+            console.print(f"  {path}")
+        console.print(
+            f"  Migrate and remove them with [cyan]{sudo_hint('waf restrict init')}[/cyan]"
         )
 
 
@@ -916,25 +915,32 @@ def waf_restrict_show():
 @click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
 def waf_restrict_init(ips, dry_run, yes):
-    """Create .htaccess IP restrictions for sensitive NetSapiens paths.
+    """Restrict the NetSapiens admin UIs to an IP allowlist.
 
-    Restricts access to admin UI, API, and other sensitive directories
-    using Apache 2.4 mod_authz_core (Require ip) directives.
+    Writes a single Apache config (/etc/apache2/conf.d/nssec-restrict.conf)
+    using mod_authz_core <LocationMatch> + Require ip directives. This survives
+    NetSapiens package upgrades and is honored under PHP-FPM, unlike the legacy
+    per-directory .htaccess files it replaces (which are removed on migration).
 
     \b
     127.0.0.1 is always included automatically. You should also include:
       - NetSapiens TAC support IPs
       - Your admin office IP(s)
 
-    Use --ip to specify IPs, or omit to be prompted interactively.
-    If existing .htaccess files are found, you will be asked whether to
-    keep or overwrite the existing IPs.
+    Use --ip to specify IPs, or omit to be prompted interactively. Existing IPs
+    (from the current config, legacy .htaccess files, or the cache) are shown
+    and you are asked whether to keep or overwrite them.
     """
     import ipaddress
 
     from nssec.core.server_types import detect_server_type
     from nssec.core.ssh import is_root
-    from nssec.modules.waf.restrict import collect_existing_ips, init_restrictions
+    from nssec.modules.waf.restrict import (
+        collect_existing_ips,
+        find_legacy_managed_htaccess,
+        init_restrictions,
+        remove_legacy_htaccess,
+    )
 
     if not is_root():
         console.print(f"[red]Error: Must run as root ({sudo_hint('waf restrict init')})[/red]")
@@ -1006,10 +1012,12 @@ def waf_restrict_init(ips, dry_run, yes):
         for name, result in results:
             label = f"[cyan]{name}:[/cyan] " if name else ""
             console.print(f"  {label}{result.message}")
+        for path, result in remove_legacy_htaccess(dry_run=True):
+            console.print(f"  {result.message}")
         console.print("\n[yellow]Dry run — no changes made.[/yellow]")
         return
 
-    if not yes and not click.confirm("Create .htaccess restrictions?"):
+    if not yes and not click.confirm("Write admin-UI IP restrictions?"):
         console.print("[yellow]Aborted.[/yellow]")
         return
 
@@ -1028,14 +1036,28 @@ def waf_restrict_init(ips, dry_run, yes):
     if any_error:
         raise SystemExit(1)
 
-    _validate_and_prompt_reload_for_restrict(yes)
+    reloaded = _validate_and_prompt_reload_for_restrict(yes)
+
+    # Only remove the legacy .htaccess files once the new config is actually
+    # live, so the admin UI is never left unprotected mid-migration.
+    if reloaded:
+        for path, result in remove_legacy_htaccess():
+            if result.success:
+                console.print(f"  [green]Done:[/green] {result.message}")
+            else:
+                console.print(f"  [red]Error:[/red] {result.error}")
+    elif find_legacy_managed_htaccess():
+        console.print(
+            "[yellow]Legacy .htaccess files left in place.[/yellow] Reload Apache, then "
+            f"re-run [cyan]{sudo_hint('waf restrict init')}[/cyan] to remove them."
+        )
 
 
 @waf_restrict.command("add")
 @click.argument("ip")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
 def waf_restrict_add(ip, yes):
-    """Add an IP address to all managed .htaccess restriction files.
+    """Add an IP address to the managed admin-UI restrict config.
 
     IP can be a single address (192.168.1.1) or CIDR notation (10.0.0.0/8).
     """
@@ -1060,7 +1082,7 @@ def waf_restrict_add(ip, yes):
         raise SystemExit(1)
 
     server_type = detect_server_type().value
-    console.print(f"Adding [cyan]{ip}[/cyan] to managed .htaccess files...")
+    console.print(f"Adding [cyan]{ip}[/cyan] to the restrict config...")
 
     results = add_restricted_ip(server_type, ip)
     any_changed = False
@@ -1083,7 +1105,7 @@ def waf_restrict_add(ip, yes):
 @click.argument("ip")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
 def waf_restrict_remove(ip, yes):
-    """Remove an IP address from all managed .htaccess restriction files.
+    """Remove an IP address from the managed admin-UI restrict config.
 
     Cannot remove 127.0.0.1 (localhost is always required).
     """
@@ -1096,7 +1118,7 @@ def waf_restrict_remove(ip, yes):
         raise SystemExit(1)
 
     server_type = detect_server_type().value
-    console.print(f"Removing [cyan]{ip}[/cyan] from managed .htaccess files...")
+    console.print(f"Removing [cyan]{ip}[/cyan] from the restrict config...")
 
     results = remove_restricted_ip(server_type, ip)
     any_changed = False
@@ -1123,11 +1145,10 @@ def waf_restrict_remove(ip, yes):
 @click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
 def waf_restrict_reapply(dry_run, yes):
-    """Re-deploy .htaccess restrictions from cached IPs.
+    """Re-deploy the admin-UI restrict config from cached IPs.
 
-    Use after a NetSapiens package upgrade overwrites .htaccess files.
-    Reads the saved IP list from /etc/nssec/restrict-ips.json and
-    re-creates all managed .htaccess files.
+    Use if the config is removed or after a NetSapiens upgrade. Reads the saved
+    IP list from /etc/nssec/restrict-ips.json and re-writes the Apache config.
     """
     from nssec.core.server_types import detect_server_type
     from nssec.core.ssh import is_root
