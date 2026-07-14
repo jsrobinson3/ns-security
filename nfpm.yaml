@@ -16,9 +16,6 @@ contents:
     file_info:
       mode: 0755
 
-  - src: rules/
-    dst: /usr/share/nssec/rules/
-
   - src: insight/
     dst: /usr/share/nssec/insight/
 

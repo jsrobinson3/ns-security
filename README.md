@@ -8,7 +8,32 @@ Open-source NetSapiens security platform — audit tools and hardening automatio
 
 ## Installation
 
-### Standalone binary (pending)
+### Quick install (recommended)
+
+One line — downloads the latest release `.deb` and installs it with apt so
+dependencies are resolved. Re-run it later to upgrade in place.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/scripts/install.sh | sudo bash
+```
+
+Pin a specific version with `--version`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/scripts/install.sh | sudo bash -s -- --version 0.2.0
+```
+
+### Debian package (manual)
+
+```bash
+wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec_0.1.0_amd64.deb
+sudo apt install ./nssec_0.1.0_amd64.deb
+```
+
+The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files
+(dashboards, insight templates) to `/usr/share/nssec/`.
+
+### Standalone binary
 
 Download the latest release — no Python or dependencies required:
 
@@ -17,15 +42,6 @@ wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec
 chmod +x nssec
 sudo mv nssec /usr/local/bin/
 ```
-
-### Debian package (pending)
-
-```bash
-wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec_0.1.0_amd64.deb
-sudo apt install ./nssec_0.1.0_amd64.deb
-```
-
-The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files (rules, dashboards, insight templates) to `/usr/share/nssec/`.
 
 ### From source with pipx (recommended)
 
