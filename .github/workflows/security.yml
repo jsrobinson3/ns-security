@@ -18,7 +18,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install -e .
+        run: |
+          # setuptools ships in the runner's base env (not a project dep — the
+          # build backend is hatchling). Upgrade past PYSEC-2026-3447 so the
+          # audit isn't tripped by an ambient package we don't ship.
+          pip install --upgrade "setuptools>=83.0.0"
+          pip install -e .
       - name: Run pip-audit
         uses: pypa/gh-action-pip-audit@v1.1.0
 
