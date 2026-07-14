@@ -10,8 +10,9 @@ Open-source NetSapiens security platform — audit tools and hardening automatio
 
 ### Quick install (recommended)
 
-One line — downloads the latest release `.deb` and installs it with apt so
-dependencies are resolved. Re-run it later to upgrade in place.
+One line — downloads the latest release `.deb` and installs it with `dpkg`.
+Re-run it later to upgrade in place. It installs only nssec and does not
+restart any system services.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/scripts/install.sh | sudo bash
@@ -27,11 +28,17 @@ curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/script
 
 ```bash
 wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec_0.1.0_amd64.deb
-sudo apt install ./nssec_0.1.0_amd64.deb
+sudo dpkg -i ./nssec_0.1.0_amd64.deb
 ```
 
 The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files
-(dashboards, insight templates) to `/usr/share/nssec/`.
+(dashboards, insight templates) to `/usr/share/nssec/`. It declares no
+dependencies and ships no maintainer scripts, so `dpkg -i` is sufficient.
+
+> Prefer `dpkg -i` over `apt install ./file.deb` on production hosts: `apt`
+> runs the `needrestart` hook, which may restart unrelated services (apache2,
+> mariadb, ssh, the `netsapiens_*` stack, ...) if the host has un-restarted
+> library updates pending. `dpkg` does not.
 
 ### Standalone binary
 

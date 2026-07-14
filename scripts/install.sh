@@ -64,8 +64,19 @@ echo "Downloading ${deb_url} ..."
 curl -fsSL -o "$deb" "$deb_url"
 
 echo "Installing ${deb} ..."
-# 'apt-get install ./file.deb' resolves and installs any dependencies.
-apt-get install -y "$deb"
+# nssec is a self-contained binary with no package dependencies (the .deb
+# declares no Depends and ships no maintainer scripts). Install with dpkg
+# directly rather than 'apt-get install': apt runs the needrestart hook, which
+# on a host with a backlog of un-restarted library updates will restart
+# unrelated services (apache2, mariadb, ssh, the netsapiens_* stack, ...)
+# without prompting when there is no TTY. dpkg does not trigger that hook.
+if ! dpkg -i "$deb"; then
+  # Only reached if a future build introduces real dependencies. Resolve them,
+  # but pin needrestart to list-only mode so it never restarts services
+  # unprompted — it will just print what it thinks needs a restart.
+  echo "Resolving dependencies ..."
+  NEEDRESTART_MODE=l apt-get -f install -y
+fi
 
 echo
 echo "nssec installed: $(command -v nssec)"
