@@ -98,7 +98,21 @@ pip install -e .
 
 Other Debian-based distributions may work but are untested. Contributions and test reports for additional platforms are welcome.
 
-> **Ubuntu 20.04 note:** U20 ships with Python 3.8 but nssec requires 3.10+. Install from source is not supported on U20 — use the standalone binary or .deb package instead.
+> **Ubuntu 20.04 note:** the prebuilt binary and `.deb` are built on Ubuntu
+> 22.04 (glibc 2.35) and will **not** run on U20 (glibc 2.31) — the bundled
+> interpreter fails to load. On U20, install from source instead; nssec runs on
+> the system's Python 3.8:
+>
+> ```bash
+> sudo apt install -y python3-venv git
+> sudo python3 -m venv /opt/nssec
+> sudo /opt/nssec/bin/pip install "git+https://github.com/jsrobinson3/ns-security.git"
+> sudo ln -sf /opt/nssec/bin/nssec /usr/local/bin/nssec
+> ```
+>
+> The install script detects the glibc mismatch and prints these steps rather
+> than leaving a broken binary. (`pipx` is not packaged for U20, so the venv
+> approach above is the reliable path there.)
 
 ### Requirements
 

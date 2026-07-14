@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # nssec installer — downloads the latest (or a specified) release .deb from
-# GitHub and installs it with apt so dependencies are resolved.
+# GitHub and installs it with dpkg.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/scripts/install.sh | sudo bash
@@ -30,6 +30,35 @@ command -v curl >/dev/null 2>&1 || err "curl is required"
 
 arch="$(dpkg --print-architecture)"
 [ "$arch" = "amd64" ] || err "no prebuilt package for architecture '$arch' (only amd64 is published)"
+
+# The prebuilt binary is built on the ubuntu-22.04 CI runner (glibc 2.35), and
+# PyInstaller binaries need the build host's glibc or newer at runtime. On older
+# systems (Ubuntu 20.04 = glibc 2.31) the .deb would install but the bundled
+# interpreter crashes at startup. Detect that and point at the source install,
+# which uses the system Python (>= 3.8) and has no glibc constraint — rather
+# than leaving a broken binary behind.
+MIN_GLIBC="2.35"
+glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+[ -n "${glibc:-}" ] || glibc="$(ldd --version 2>/dev/null | head -n1 | awk '{print $NF}')"
+if [ -n "${glibc:-}" ] && ! dpkg --compare-versions "$glibc" ge "$MIN_GLIBC"; then
+  if [ "$VERSION" = "latest" ]; then src_ref=""; else src_ref="@v${VERSION#v}"; fi
+  cat >&2 <<EOF
+error: this system has glibc ${glibc}, but the prebuilt nssec binary requires
+       glibc >= ${MIN_GLIBC} (it is built on Ubuntu 22.04). Installing the .deb
+       here would leave a binary that crashes at startup.
+
+Install from source instead — nssec runs on Python >= 3.8, with no glibc
+constraint. On Ubuntu 20.04:
+
+  sudo apt install -y python3-venv git
+  sudo python3 -m venv /opt/nssec
+  sudo /opt/nssec/bin/pip install "git+https://github.com/${REPO}.git${src_ref}"
+  sudo ln -sf /opt/nssec/bin/nssec /usr/local/bin/nssec
+
+See the README "From source" section for other options.
+EOF
+  exit 1
+fi
 
 # --- resolve the .deb download URL ----------------------------------------
 if [ "$VERSION" = "latest" ]; then
