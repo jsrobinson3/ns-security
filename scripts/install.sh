@@ -39,13 +39,21 @@ else
 fi
 
 echo "Resolving release from ${api} ..."
+# Query the API separately so a failed request (404, rate limit, network) gives
+# a clear message instead of an empty parse.
+release_json="$(curl -fsSL "$api")" \
+  || err "could not query the releases API — check the version exists and you are not rate-limited: ${api}"
+
 # Pull the first amd64 .deb asset URL out of the release JSON without needing jq.
-deb_url="$(curl -fsSL "$api" \
+# The pipeline can exit non-zero when grep finds nothing, or via SIGPIPE when
+# head closes early on success; '|| true' keeps set -e from aborting before the
+# guard below can report a useful error.
+deb_url="$(printf '%s' "$release_json" \
   | grep -o '"browser_download_url": *"[^"]*_amd64\.deb"' \
   | head -n1 \
-  | sed 's/.*"browser_download_url": *"\([^"]*\)"/\1/')"
+  | sed 's/.*"browser_download_url": *"\([^"]*\)"/\1/')" || true
 
-[ -n "$deb_url" ] || err "could not find an amd64 .deb asset for version '${VERSION}'"
+[ -n "$deb_url" ] || err "release '${VERSION}' has no amd64 .deb asset yet — see https://github.com/${REPO}/releases"
 
 # --- download & install ----------------------------------------------------
 tmp="$(mktemp -d)"
