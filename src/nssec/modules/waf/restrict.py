@@ -98,6 +98,13 @@ def parse_ips(path: str) -> list[str]:
     content = read_file(path)
     if not content:
         return []
+    # Drop comment lines first. Hand-edited files and NetSapiens' default
+    # .htaccess often carry commented example directives (e.g.
+    # "# Require ip <ADMIN-IP>"); without this the regexes below would scrape
+    # the placeholder as a real IP and carry it into the generated config.
+    content = "\n".join(
+        line for line in content.splitlines() if not line.lstrip().startswith("#")
+    )
     ips: list[str] = []
     # Apache 2.4: Require ip <addr>
     ips.extend(re.findall(r"Require\s+ip\s+(\S+)", content))

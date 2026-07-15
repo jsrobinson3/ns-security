@@ -114,6 +114,20 @@ class TestParseIps:
         with patch("nssec.modules.waf.restrict.read_file", return_value=content):
             assert parse_ips("/some/path") == ["127.0.0.1", "192.168.1.100", "10.0.0.0/8"]
 
+    def test_ignores_commented_placeholder_lines(self):
+        from nssec.modules.waf.restrict import parse_ips
+
+        content = (
+            "# Example, replace with your IP:\n"
+            "# Require ip <ADMIN-IP>\n"
+            "Require ip 207.45.79.249\n"
+            "# Allow from <YOUR-IP>\n"
+        )
+        with patch("nssec.modules.waf.restrict.read_file", return_value=content):
+            ips = parse_ips("/fake/.htaccess")
+        assert ips == ["207.45.79.249"]
+        assert "<ADMIN-IP>" not in ips
+
     def test_returns_empty_for_missing_file(self):
         from nssec.modules.waf.restrict import parse_ips
 
