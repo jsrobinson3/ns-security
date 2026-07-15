@@ -165,15 +165,33 @@ The WAF module includes:
 
 WAF rule templates (exclusions and CRS setup overrides) are defined in `src/nssec/modules/waf/config.py` and deployed to `/etc/modsecurity/` by `nssec waf init`.
 
-### Path Restrictions (.htaccess)
+### Admin UI IP Restrictions
 
-Restrict access to sensitive NetSapiens paths (admin UI, API, NDP, recording) using `.htaccess` IP allowlists:
+Restrict access to the NetSapiens admin UIs (SiPbx, NDP, LiCf) to an IP
+allowlist. nssec writes a single Apache config —
+`/etc/apache2/conf.d/nssec-restrict.conf` — using Apache 2.4 mod_authz_core
+directives:
+
+```apache
+<LocationMatch "^/(SiPbx|ndp|LiCf)/">
+    <RequireAny>
+        Require ip 127.0.0.1
+        Require ip <your IPs>
+    </RequireAny>
+</LocationMatch>
+```
+
+This is the method recommended by NetSapiens: it lives outside the NetSapiens
+package tree (so it survives upgrades) and is honored under PHP-FPM — unlike the
+legacy per-directory `.htaccess` files (Apache 2.2 `Order`/`Allow` syntax) that
+earlier versions wrote. `ns-api` is intentionally **not** restricted, since it
+serves the REST API that apps and integrations depend on.
 
 ```bash
 # Show current restriction status
 nssec waf restrict show
 
-# Create .htaccess restrictions (interactive — shows existing IPs, asks to keep or overwrite)
+# Create restrictions (interactive — shows existing IPs, asks to keep or overwrite)
 sudo nssec waf restrict init
 
 # Specify IPs directly
@@ -183,24 +201,25 @@ sudo nssec waf restrict init --ip 1.1.1.1 --ip 1.2.3.0/22
 sudo nssec waf restrict add 1.1.1.1
 sudo nssec waf restrict remove 1.1.1.1
 
-# Re-deploy after a NetSapiens package upgrade overwrites .htaccess files
+# Re-deploy from the saved IP cache
 sudo nssec waf restrict reapply
 ```
 
 The `init` command will:
-- Detect which paths apply to the current server type (Core, NDP, Recording, Combo)
-- Show any existing IPs from current `.htaccess` files and ask whether to keep or overwrite them
+- Detect which admin UIs apply to the current server type (Core, NDP, Recording, Combo) and are installed
+- Carry forward existing IPs from the current config, any legacy `.htaccess` files, and the cache — asking whether to keep or overwrite them
 - Always include `127.0.0.1` automatically
-- Save the IP list to `/etc/nssec/restrict-ips.json` so it survives NS package upgrades
+- Save the IP list to `/etc/nssec/restrict-ips.json` for `reapply`
+- Validate the config (`apache2ctl configtest`) and reload Apache
+- **Migrate from the old method:** once the new config is live, remove any leftover `.htaccess` files that nssec previously created (hand-written `.htaccess` files are never touched)
 
-**Protected paths:**
+**Restricted admin UIs:**
 
-| Target | Path | Server Types |
-|--------|------|:------------:|
-| SiPbx Admin UI | `/usr/local/NetSapiens/SiPbx/html/SiPbx/` | Core, Combo |
-| ns-api | `/usr/local/NetSapiens/SiPbx/html/ns-api/` | Core, Combo |
-| NDP Endpoints | `/usr/local/NetSapiens/ndp/` | NDP, Combo |
-| LiCf Recording | `/usr/local/NetSapiens/LiCf/html/LiCf/` | Recording, Combo |
+| Admin UI | URL path | Server Types |
+|----------|----------|:------------:|
+| SiPbx | `/SiPbx/` | Core, Combo |
+| NDP | `/ndp/` | NDP, Combo |
+| LiCf Recording | `/LiCf/` | Recording, Combo |
 
 ### mod_evasive (HTTP Flood Protection)
 

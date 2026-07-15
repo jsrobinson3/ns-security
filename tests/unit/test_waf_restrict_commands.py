@@ -1,4 +1,4 @@
-"""Tests for WAF restrict CLI commands."""
+"""Tests for WAF restrict CLI commands (Apache-config method)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -14,42 +14,46 @@ def runner():
     return CliRunner()
 
 
+def _status(
+    exists=True,
+    managed=True,
+    ips=None,
+    components=None,
+    segments=None,
+    legacy=None,
+):
+    """Build a get_restrict_status() return value."""
+    return {
+        "path": "/etc/apache2/conf.d/nssec-restrict.conf",
+        "exists": exists,
+        "managed": managed,
+        "ips": ips if ips is not None else ["127.0.0.1", "192.168.1.100"],
+        "components": components if components is not None else ["SiPbx Admin UI"],
+        "segments": segments if segments is not None else ["SiPbx"],
+        "legacy": legacy if legacy is not None else [],
+    }
+
+
 class TestWafRestrictShow:
     """Tests for waf restrict show command."""
 
-    def test_shows_status_table(self, runner):
-        """Should display restriction status for applicable paths."""
-        statuses = [
-            {
-                "name": "SiPbx Admin UI",
-                "path": "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess",
-                "exists": True,
-                "managed": True,
-                "ips": ["127.0.0.1", "192.168.1.100"],
-            },
-            {
-                "name": "ns-api",
-                "path": "/usr/local/NetSapiens/SiPbx/html/ns-api/.htaccess",
-                "exists": False,
-                "managed": False,
-                "ips": [],
-            },
-        ]
+    def test_shows_status(self, runner):
         with patch("nssec.core.server_types.detect_server_type") as mock_detect, patch(
-            "nssec.modules.waf.restrict.get_restrict_status", return_value=statuses
-        ):
+            "nssec.modules.waf.restrict.get_restrict_status", return_value=_status()
+        ), patch("nssec.modules.waf.restrict.load_cached_ips", return_value=[]):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "show"])
 
         assert result.exit_code == 0
         assert "SiPbx Admin UI" in result.output
-        assert "ns-api" in result.output
+        assert "nssec-restrict.conf" in result.output
+        assert "192.168.1.100" in result.output
 
     def test_shows_empty_message(self, runner):
-        """Should show message when no targets apply."""
+        empty = _status(exists=False, managed=False, ips=[], components=[], segments=[], legacy=[])
         with patch("nssec.core.server_types.detect_server_type") as mock_detect, patch(
-            "nssec.modules.waf.restrict.get_restrict_status", return_value=[]
-        ):
+            "nssec.modules.waf.restrict.get_restrict_status", return_value=empty
+        ), patch("nssec.modules.waf.restrict.load_cached_ips", return_value=[]):
             mock_detect.return_value = MagicMock(value="unknown")
             result = runner.invoke(waf, ["restrict", "show"])
 
@@ -57,84 +61,92 @@ class TestWafRestrictShow:
         assert "No applicable" in result.output
 
     def test_default_subcommand_shows_status(self, runner):
-        """Running 'waf restrict' without subcommand should show status."""
-        statuses = [
-            {
-                "name": "SiPbx Admin UI",
-                "path": "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess",
-                "exists": True,
-                "managed": True,
-                "ips": ["127.0.0.1"],
-            },
-        ]
         with patch("nssec.core.server_types.detect_server_type") as mock_detect, patch(
-            "nssec.modules.waf.restrict.get_restrict_status", return_value=statuses
-        ):
+            "nssec.modules.waf.restrict.get_restrict_status", return_value=_status()
+        ), patch("nssec.modules.waf.restrict.load_cached_ips", return_value=[]):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict"])
 
         assert result.exit_code == 0
         assert "SiPbx Admin UI" in result.output
 
-    def test_lists_ips_from_first_managed_file(self, runner):
-        """Should list IPs from the first managed file."""
-        statuses = [
-            {
-                "name": "SiPbx Admin UI",
-                "path": "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess",
-                "exists": True,
-                "managed": True,
-                "ips": ["127.0.0.1", "10.0.0.1"],
-            },
-        ]
+    def test_warns_about_leftover_legacy_htaccess(self, runner):
+        status = _status(legacy=["/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess"])
         with patch("nssec.core.server_types.detect_server_type") as mock_detect, patch(
-            "nssec.modules.waf.restrict.get_restrict_status", return_value=statuses
-        ):
+            "nssec.modules.waf.restrict.get_restrict_status", return_value=status
+        ), patch("nssec.modules.waf.restrict.load_cached_ips", return_value=[]):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "show"])
 
         assert result.exit_code == 0
-        assert "127.0.0.1" in result.output
-        assert "10.0.0.1" in result.output
+        assert "Legacy .htaccess" in result.output
+        assert "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess" in result.output
 
 
 class TestWafRestrictInit:
     """Tests for waf restrict init command."""
 
     def test_requires_root(self, runner):
-        """Should fail if not root."""
         with patch("nssec.core.ssh.is_root", return_value=False):
             result = runner.invoke(waf, ["restrict", "init", "--ip", "10.0.0.1", "-y"])
 
         assert result.exit_code == 1
         assert "root" in result.output.lower()
 
-    def test_creates_htaccess_files(self, runner):
-        """Should create .htaccess files with provided IPs."""
+    def test_writes_config(self, runner):
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Created file")),
-            ("ns-api", StepResult(message="Created file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Wrote config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.collect_existing_ips", return_value=[]
         ), patch(
             "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
-        ) as mock_init, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
+        ) as mock_init, patch(
+            "nssec.modules.waf.restrict.remove_legacy_htaccess", return_value=[]
+        ), patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "init", "--ip", "192.168.1.100", "-y"])
 
         assert result.exit_code == 0
         mock_init.assert_called_once()
-        call_args = mock_init.call_args
-        assert "192.168.1.100" in call_args[0][1]  # ips list
+        assert "192.168.1.100" in mock_init.call_args[0][1]
+
+    def test_removes_legacy_htaccess_after_reload(self, runner):
+        """On migrate, legacy nssec-managed .htaccess files are cleaned up."""
+        from nssec.modules.waf.types import StepResult
+
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Wrote config"))]
+        cleanup = [
+            (
+                "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess",
+                StepResult(
+                    message="Removed legacy /usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess"
+                ),
+            )
+        ]
+        with patch("nssec.core.ssh.is_root", return_value=True), patch(
+            "nssec.core.server_types.detect_server_type"
+        ) as mock_detect, patch(
+            "nssec.modules.waf.restrict.collect_existing_ips", return_value=[]
+        ), patch(
+            "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
+        ), patch(
+            "nssec.modules.waf.restrict.remove_legacy_htaccess", return_value=cleanup
+        ) as mock_cleanup, patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
+            mock_detect.return_value = MagicMock(value="core")
+            result = runner.invoke(waf, ["restrict", "init", "--ip", "192.168.1.100", "-y"])
+
+        assert result.exit_code == 0
+        mock_cleanup.assert_called_once_with()
+        assert "Removed legacy" in result.output
 
     def test_validates_ip_address(self, runner):
-        """Should reject invalid IP addresses."""
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch("nssec.modules.waf.restrict.collect_existing_ips", return_value=[]):
@@ -145,18 +157,18 @@ class TestWafRestrictInit:
         assert "Invalid" in result.output
 
     def test_dry_run(self, runner):
-        """Should show what would be done in dry run."""
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Would create file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Would write config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.collect_existing_ips", return_value=[]
-        ), patch("nssec.modules.waf.restrict.init_restrictions", return_value=mock_results):
+        ), patch(
+            "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
+        ), patch(
+            "nssec.modules.waf.restrict.remove_legacy_htaccess", return_value=[]
+        ):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "init", "--ip", "10.0.0.1", "--dry-run"])
 
@@ -164,18 +176,18 @@ class TestWafRestrictInit:
         assert "Dry run" in result.output
 
     def test_accepts_cidr_notation(self, runner):
-        """Should accept CIDR notation IPs."""
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Created file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Wrote config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.collect_existing_ips", return_value=[]
-        ), patch("nssec.modules.waf.restrict.init_restrictions", return_value=mock_results), patch(
+        ), patch(
+            "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
+        ), patch(
+            "nssec.modules.waf.restrict.remove_legacy_htaccess", return_value=[]
+        ), patch(
             "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
         ):
             mock_detect.return_value = MagicMock(value="core")
@@ -184,13 +196,9 @@ class TestWafRestrictInit:
         assert result.exit_code == 0
 
     def test_shows_existing_ips_and_keeps_by_default(self, runner):
-        """Should show existing IPs and keep them when user confirms."""
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Created file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Wrote config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
@@ -198,95 +206,66 @@ class TestWafRestrictInit:
             return_value=["10.0.0.5", "172.16.0.1"],
         ), patch(
             "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
-        ) as mock_init, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
+        ) as mock_init, patch(
+            "nssec.modules.waf.restrict.remove_legacy_htaccess", return_value=[]
+        ), patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
             mock_detect.return_value = MagicMock(value="core")
-            # Confirm keep=Yes, create=Yes, reload=Yes
             result = runner.invoke(
                 waf, ["restrict", "init", "--ip", "192.168.1.100"], input="y\ny\ny\n"
             )
 
         assert result.exit_code == 0
         assert "10.0.0.5" in result.output
-        assert "172.16.0.1" in result.output
-        # merge_existing should be True (keeping existing)
-        call_kwargs = mock_init.call_args[1]
-        assert call_kwargs.get("merge_existing") is True
+        assert mock_init.call_args[1].get("merge_existing") is True
 
     def test_shows_existing_ips_and_overwrites_on_no(self, runner):
-        """Should overwrite existing IPs when user says no to keeping."""
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Created file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Wrote config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.collect_existing_ips", return_value=["10.0.0.5"]
         ), patch(
             "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
-        ) as mock_init, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
+        ) as mock_init, patch(
+            "nssec.modules.waf.restrict.remove_legacy_htaccess", return_value=[]
+        ), patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
             mock_detect.return_value = MagicMock(value="core")
-            # Confirm keep=No, create=Yes, reload=Yes
             result = runner.invoke(
                 waf, ["restrict", "init", "--ip", "192.168.1.100"], input="n\ny\ny\n"
             )
 
         assert result.exit_code == 0
         assert "Overwriting" in result.output
-        # merge_existing should be False
-        call_kwargs = mock_init.call_args[1]
-        assert call_kwargs.get("merge_existing") is False
-
-    def test_yes_flag_keeps_existing_ips_by_default(self, runner):
-        """With --yes, should keep existing IPs without prompting."""
-        from nssec.modules.waf.types import StepResult
-
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Created file")),
-        ]
-
-        with patch("nssec.core.ssh.is_root", return_value=True), patch(
-            "nssec.core.server_types.detect_server_type"
-        ) as mock_detect, patch(
-            "nssec.modules.waf.restrict.collect_existing_ips", return_value=["10.0.0.5"]
-        ), patch(
-            "nssec.modules.waf.restrict.init_restrictions", return_value=mock_results
-        ) as mock_init, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
-            mock_detect.return_value = MagicMock(value="core")
-            result = runner.invoke(waf, ["restrict", "init", "--ip", "192.168.1.100", "-y"])
-
-        assert result.exit_code == 0
-        assert "Keeping" in result.output
-        call_kwargs = mock_init.call_args[1]
-        assert call_kwargs.get("merge_existing") is True
+        assert mock_init.call_args[1].get("merge_existing") is False
 
 
 class TestWafRestrictAdd:
     """Tests for waf restrict add command."""
 
     def test_requires_root(self, runner):
-        """Should fail if not root."""
         with patch("nssec.core.ssh.is_root", return_value=False):
             result = runner.invoke(waf, ["restrict", "add", "192.168.1.100", "-y"])
 
         assert result.exit_code == 1
         assert "root" in result.output.lower()
 
-    def test_adds_ip_to_managed_files(self, runner):
-        """Should add IP to all managed .htaccess files."""
+    def test_adds_ip(self, runner):
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Added 192.168.1.100")),
-        ]
-
+        mock_results = [("", StepResult(message="Added 192.168.1.100"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.add_restricted_ip", return_value=mock_results
-        ) as mock_add, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
+        ) as mock_add, patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "add", "192.168.1.100", "-y"])
 
@@ -294,7 +273,6 @@ class TestWafRestrictAdd:
         mock_add.assert_called_once_with("core", "192.168.1.100")
 
     def test_validates_ip_address(self, runner):
-        """Should reject invalid IP addresses."""
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect:
@@ -309,26 +287,23 @@ class TestWafRestrictRemove:
     """Tests for waf restrict remove command."""
 
     def test_requires_root(self, runner):
-        """Should fail if not root."""
         with patch("nssec.core.ssh.is_root", return_value=False):
             result = runner.invoke(waf, ["restrict", "remove", "192.168.1.100", "-y"])
 
         assert result.exit_code == 1
         assert "root" in result.output.lower()
 
-    def test_removes_ip_from_managed_files(self, runner):
-        """Should remove IP from managed .htaccess files."""
+    def test_removes_ip(self, runner):
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Removed 192.168.1.100")),
-        ]
-
+        mock_results = [("", StepResult(message="Removed 192.168.1.100"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.remove_restricted_ip", return_value=mock_results
-        ) as mock_remove, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
+        ) as mock_remove, patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "remove", "192.168.1.100", "-y"])
 
@@ -336,7 +311,6 @@ class TestWafRestrictRemove:
         mock_remove.assert_called_once_with("core", "192.168.1.100")
 
     def test_blocks_localhost_removal(self, runner):
-        """Should block removal of 127.0.0.1."""
         from nssec.modules.waf.types import StepResult
 
         mock_results = [
@@ -346,9 +320,8 @@ class TestWafRestrictRemove:
                     success=False,
                     error="Cannot remove 127.0.0.1 (localhost must always be allowed)",
                 ),
-            ),
+            )
         ]
-
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
@@ -365,7 +338,6 @@ class TestWafRestrictReapply:
     """Tests for waf restrict reapply command."""
 
     def test_requires_root(self, runner):
-        """Should fail if not root."""
         with patch("nssec.core.ssh.is_root", return_value=False):
             result = runner.invoke(waf, ["restrict", "reapply", "-y"])
 
@@ -373,59 +345,36 @@ class TestWafRestrictReapply:
         assert "root" in result.output.lower()
 
     def test_restores_from_cache(self, runner):
-        """Should restore .htaccess files from cached IPs."""
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Restored file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Restored config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.load_cached_ips", return_value=["127.0.0.1", "10.0.0.1"]
         ), patch(
             "nssec.modules.waf.restrict.reapply_restrictions", return_value=mock_results
-        ) as mock_reapply, patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
+        ) as mock_reapply, patch(
+            "nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)
+        ):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "reapply", "-y"])
 
         assert result.exit_code == 0
         mock_reapply.assert_called_once()
-
-    def test_shows_cached_ips(self, runner):
-        """Should display cached IPs before reapplying."""
-        from nssec.modules.waf.types import StepResult
-
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Restored file")),
-        ]
-
-        with patch("nssec.core.ssh.is_root", return_value=True), patch(
-            "nssec.core.server_types.detect_server_type"
-        ) as mock_detect, patch(
-            "nssec.modules.waf.restrict.load_cached_ips", return_value=["127.0.0.1", "10.0.0.1"]
-        ), patch(
-            "nssec.modules.waf.restrict.reapply_restrictions", return_value=mock_results
-        ), patch("nssec.modules.waf.utils.run_cmd", return_value=("", "", 0)):
-            mock_detect.return_value = MagicMock(value="core")
-            result = runner.invoke(waf, ["restrict", "reapply", "-y"])
-
         assert "10.0.0.1" in result.output
 
     def test_dry_run(self, runner):
-        """Should show what would be done in dry run."""
         from nssec.modules.waf.types import StepResult
 
-        mock_results = [
-            ("SiPbx Admin UI", StepResult(message="Would write file")),
-        ]
-
+        mock_results = [("Admin UI restrictions (SiPbx)", StepResult(message="Would write config"))]
         with patch("nssec.core.ssh.is_root", return_value=True), patch(
             "nssec.core.server_types.detect_server_type"
         ) as mock_detect, patch(
             "nssec.modules.waf.restrict.load_cached_ips", return_value=["127.0.0.1"]
-        ), patch("nssec.modules.waf.restrict.reapply_restrictions", return_value=mock_results):
+        ), patch(
+            "nssec.modules.waf.restrict.reapply_restrictions", return_value=mock_results
+        ):
             mock_detect.return_value = MagicMock(value="core")
             result = runner.invoke(waf, ["restrict", "reapply", "--dry-run"])
 

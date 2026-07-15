@@ -60,6 +60,15 @@ def write_file(path: str, content: str) -> bool:
         return False
 
 
+def remove_file(path: str) -> bool:
+    """Delete a file. Returns True if removed or already absent, False on error."""
+    try:
+        Path(path).unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def render(template_str: str, **kwargs: object) -> str:
     """Render a Jinja2 template string."""
     return Template(template_str).render(
