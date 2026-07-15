@@ -676,3 +676,23 @@ class TestInvalidIpFiltering:
         content = _render_conf(["SiPbx"], ["127.0.0.1", "junk", "203.0.113.5"])
         assert "junk" not in content
         assert "Require ip 203.0.113.5" in content
+
+
+class TestCollectExistingIpsFiltersInvalid:
+    """collect_existing_ips must not surface invalid tokens (e.g. an unresolved
+    <ADMIN-IP> placeholder left uncommented in a legacy .htaccess)."""
+
+    def test_drops_invalid_from_htaccess_and_cache(self):
+        from nssec.modules.waf import restrict as r
+
+        htaccess = (
+            "    Allow from 127.0.0.1\n"
+            "    Allow from <ADMIN-IP>\n"
+            "    Allow from 207.45.79.249\n"
+        )
+        with patch.object(r, "file_exists", side_effect=lambda p: p in r.LEGACY_HTACCESS_PATHS), \
+             patch.object(r, "read_file", return_value=htaccess), \
+             patch.object(r, "load_cached_ips", return_value=["<ADMIN-IP>", "9.9.9.9"]):
+            ips = r.collect_existing_ips("combo")
+        assert "<ADMIN-IP>" not in ips
+        assert ips == ["207.45.79.249", "9.9.9.9"]

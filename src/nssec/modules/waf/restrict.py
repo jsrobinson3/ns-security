@@ -220,29 +220,34 @@ def collect_existing_ips(server_type: str) -> list[str]:
     """Gather IPs to carry forward when (re)writing the restrict config.
 
     Pulls from the current restrict config, any legacy .htaccess files, and
-    the restrict cache. 127.0.0.1 is excluded (it is always re-added).
+    the restrict cache. 127.0.0.1 is excluded (it is always re-added), as are
+    invalid tokens — a hand-edited .htaccess may carry an unresolved template
+    placeholder in an active directive (e.g. "Allow from <ADMIN-IP>"), which
+    is not a usable IP and must not be shown as an existing entry or carried
+    into the generated config.
 
     Args:
         server_type: Server type string (accepted for API symmetry).
 
     Returns:
-        Deduplicated list of IPs, excluding 127.0.0.1.
+        Deduplicated list of valid IPs/CIDRs, excluding 127.0.0.1.
     """
     seen: set[str] = set()
     result: list[str] = []
+
+    def _consider(ip: str) -> None:
+        if ip != "127.0.0.1" and is_valid_ip(ip) and ip not in seen:
+            seen.add(ip)
+            result.append(ip)
 
     for path in [RESTRICT_CONF_PATH, *LEGACY_HTACCESS_PATHS]:
         if not file_exists(path):
             continue
         for ip in parse_ips(path):
-            if ip != "127.0.0.1" and ip not in seen:
-                seen.add(ip)
-                result.append(ip)
+            _consider(ip)
 
     for ip in load_cached_ips():
-        if ip != "127.0.0.1" and ip not in seen:
-            seen.add(ip)
-            result.append(ip)
+        _consider(ip)
 
     return result
 
