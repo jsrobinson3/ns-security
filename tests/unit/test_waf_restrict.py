@@ -608,3 +608,57 @@ class TestRestrictConfTemplate:
         # Must not use deprecated Apache 2.2 syntax
         assert "Order" not in rendered
         assert "Allow from" not in rendered
+
+
+class TestInvalidIpFiltering:
+    """Invalid tokens must never reach the Apache config or the cache."""
+
+    def test_is_valid_ip(self):
+        from nssec.modules.waf.restrict import is_valid_ip
+
+        assert is_valid_ip("127.0.0.1")
+        assert is_valid_ip("74.219.23.50")
+        assert is_valid_ip("1.2.3.0/22")
+        assert not is_valid_ip("<ADMIN-IP>")
+        assert not is_valid_ip("not-an-ip")
+        assert not is_valid_ip("999.1.1.1")
+
+    def test_init_drops_invalid_existing_ips(self):
+        from nssec.modules.waf.restrict import init_restrictions
+
+        captured = {}
+        with patch(
+            "nssec.modules.waf.restrict.collect_existing_ips",
+            return_value=["<ADMIN-IP>", "207.45.79.249"],
+        ), patch(
+            "nssec.modules.waf.restrict.get_applicable_components",
+            return_value=[{"name": "SiPbx", "segment": "SiPbx"}],
+        ), patch(
+            "nssec.modules.waf.restrict.file_exists", return_value=False
+        ), patch(
+            "nssec.modules.waf.restrict.write_file",
+            side_effect=lambda p, c: captured.update(content=c) or True,
+        ), patch(
+            "nssec.modules.waf.restrict.save_cached_ips",
+            side_effect=lambda ips: captured.update(cached=ips),
+        ), patch(
+            "nssec.modules.waf.restrict.backup_file"
+        ):
+            results = init_restrictions("combo", [], merge_existing=True)
+
+        # The invalid token is not written to the config...
+        assert "<ADMIN-IP>" not in captured["content"]
+        assert "Require ip 207.45.79.249" in captured["content"]
+        # ...nor persisted to the cache (self-heals),
+        assert "<ADMIN-IP>" not in captured["cached"]
+        assert captured["cached"] == ["127.0.0.1", "207.45.79.249"]
+        # ...and the skip is reported.
+        assert "skipped 1 invalid" in results[0][1].message
+        assert "<ADMIN-IP>" in results[0][1].message
+
+    def test_render_conf_is_a_safety_net(self):
+        from nssec.modules.waf.restrict import _render_conf
+
+        content = _render_conf(["SiPbx"], ["127.0.0.1", "junk", "203.0.113.5"])
+        assert "junk" not in content
+        assert "Require ip 203.0.113.5" in content
