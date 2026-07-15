@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "5"
+NS_EXCLUSIONS_VERSION = "6"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -213,7 +213,13 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
 # 942200).  Reddit (_rdt_*), Google (_ga, _gid), Facebook (_fbp) etc. use
 # delimiters that match shell patterns like ~N (directory stack), triggering
-# RCE false positives (932270).
+# RCE false positives (932270).  High-entropy CDN tokens — notably Cloudflare's
+# cf_clearance / __cf_bm — contain random substrings that match OS file
+# extensions in the LFI phrase list (e.g. ".nsr"), triggering 930120.
+#
+# Cookies are opaque server/CDN-issued tokens, not user-supplied file paths or
+# query values, so scanning them for these attack classes is all noise.  Scope
+# the removals to REQUEST_COOKIES so request bodies and args stay protected.
 #
 # Uses runtime ctl:ruleRemoveTargetById so this works regardless of whether
 # the exclusions file loads before or after the CRS rules (e.g. when the
@@ -226,7 +232,8 @@ SecAction \
      nolog,\\
      ctl:ruleRemoveTargetById=942100;REQUEST_COOKIES,\\
      ctl:ruleRemoveTargetById=942200;REQUEST_COOKIES,\\
-     ctl:ruleRemoveTargetById=932270;REQUEST_COOKIES"
+     ctl:ruleRemoveTargetById=932270;REQUEST_COOKIES,\\
+     ctl:ruleRemoveTargetById=930120;REQUEST_COOKIES"
 
 # ---- NS API endpoints use base64 in query strings ----
 SecRule REQUEST_URI "@beginsWith /ns-api/" \\
