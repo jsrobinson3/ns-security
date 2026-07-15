@@ -968,13 +968,26 @@ def waf_restrict_init(ips, dry_run, yes):
     # Collect IPs
     ip_list = list(ips)
     if not ip_list:
-        console.print(
-            "[bold]Enter IP addresses to allow access[/bold] "
-            "(one per line, or space/comma separated)."
-        )
-        console.print("  Include NetSapiens TAC IPs and your admin office IPs.")
-        console.print("  127.0.0.1 is always included automatically.")
-        console.print("  Press Enter on a blank line when done.")
+        keeping_existing = bool(existing_ips) and merge_existing
+        if keeping_existing:
+            console.print(
+                f"[bold]Enter any additional IP addresses to allow[/bold] — these are "
+                f"added on top of the {len(existing_ips)} existing IP(s) you kept."
+            )
+            console.print("  One per line, or space/comma separated.")
+            console.print("  Include NetSapiens TAC IPs and your admin office IPs.")
+            console.print("  127.0.0.1 is always included automatically.")
+            console.print(
+                "  Press Enter on a blank line to add none and keep only the existing IPs."
+            )
+        else:
+            console.print(
+                "[bold]Enter IP addresses to allow access[/bold] "
+                "(one per line, or space/comma separated)."
+            )
+            console.print("  Include NetSapiens TAC IPs and your admin office IPs.")
+            console.print("  127.0.0.1 is always included automatically.")
+            console.print("  Press Enter on a blank line when done.")
         console.print()
         lines: list[str] = []
         while True:
