@@ -8,7 +8,39 @@ Open-source NetSapiens security platform — audit tools and hardening automatio
 
 ## Installation
 
-### Standalone binary (pending)
+### Quick install (recommended)
+
+One line — downloads the latest release `.deb` and installs it with `dpkg`.
+Re-run it later to upgrade in place. It installs only nssec and does not
+restart any system services.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/scripts/install.sh | sudo bash
+```
+
+Pin a specific version with `--version`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsrobinson3/ns-security/main/scripts/install.sh | sudo bash -s -- --version 0.2.0
+```
+
+### Debian package (manual)
+
+```bash
+wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec_0.1.0_amd64.deb
+sudo dpkg -i ./nssec_0.1.0_amd64.deb
+```
+
+The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files
+(dashboards, insight templates) to `/usr/share/nssec/`. It declares no
+dependencies and ships no maintainer scripts, so `dpkg -i` is sufficient.
+
+> Prefer `dpkg -i` over `apt install ./file.deb` on production hosts: `apt`
+> runs the `needrestart` hook, which may restart unrelated services (apache2,
+> mariadb, ssh, the `netsapiens_*` stack, ...) if the host has un-restarted
+> library updates pending. `dpkg` does not.
+
+### Standalone binary
 
 Download the latest release — no Python or dependencies required:
 
@@ -17,15 +49,6 @@ wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec
 chmod +x nssec
 sudo mv nssec /usr/local/bin/
 ```
-
-### Debian package (pending)
-
-```bash
-wget https://github.com/jsrobinson3/ns-security/releases/latest/download/nssec_0.1.0_amd64.deb
-sudo apt install ./nssec_0.1.0_amd64.deb
-```
-
-The `.deb` installs the binary to `/usr/local/bin/nssec` and reference files (rules, dashboards, insight templates) to `/usr/share/nssec/`.
 
 ### From source with pipx (recommended)
 
@@ -75,7 +98,21 @@ pip install -e .
 
 Other Debian-based distributions may work but are untested. Contributions and test reports for additional platforms are welcome.
 
-> **Ubuntu 20.04 note:** U20 ships with Python 3.8 but nssec requires 3.10+. Install from source is not supported on U20 — use the standalone binary or .deb package instead.
+> **Ubuntu 20.04 note:** the prebuilt binary and `.deb` are built on Ubuntu
+> 22.04 (glibc 2.35) and will **not** run on U20 (glibc 2.31) — the bundled
+> interpreter fails to load. On U20, install from source instead; nssec runs on
+> the system's Python 3.8:
+>
+> ```bash
+> sudo apt install -y python3-venv git
+> sudo python3 -m venv /opt/nssec
+> sudo /opt/nssec/bin/pip install "git+https://github.com/jsrobinson3/ns-security.git"
+> sudo ln -sf /opt/nssec/bin/nssec /usr/local/bin/nssec
+> ```
+>
+> The install script detects the glibc mismatch and prints these steps rather
+> than leaving a broken binary. (`pipx` is not packaged for U20, so the venv
+> approach above is the reliable path there.)
 
 ### Requirements
 

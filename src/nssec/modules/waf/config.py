@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "4"
+NS_EXCLUSIONS_VERSION = "6"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -213,7 +213,13 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
 # 942200).  Reddit (_rdt_*), Google (_ga, _gid), Facebook (_fbp) etc. use
 # delimiters that match shell patterns like ~N (directory stack), triggering
-# RCE false positives (932270).
+# RCE false positives (932270).  High-entropy CDN tokens — notably Cloudflare's
+# cf_clearance / __cf_bm — contain random substrings that match OS file
+# extensions in the LFI phrase list (e.g. ".nsr"), triggering 930120.
+#
+# Cookies are opaque server/CDN-issued tokens, not user-supplied file paths or
+# query values, so scanning them for these attack classes is all noise.  Scope
+# the removals to REQUEST_COOKIES so request bodies and args stay protected.
 #
 # Uses runtime ctl:ruleRemoveTargetById so this works regardless of whether
 # the exclusions file loads before or after the CRS rules (e.g. when the
@@ -226,7 +232,8 @@ SecAction \
      nolog,\\
      ctl:ruleRemoveTargetById=942100;REQUEST_COOKIES,\\
      ctl:ruleRemoveTargetById=942200;REQUEST_COOKIES,\\
-     ctl:ruleRemoveTargetById=932270;REQUEST_COOKIES"
+     ctl:ruleRemoveTargetById=932270;REQUEST_COOKIES,\\
+     ctl:ruleRemoveTargetById=930120;REQUEST_COOKIES"
 
 # ---- NS API endpoints use base64 in query strings ----
 SecRule REQUEST_URI "@beginsWith /ns-api/" \\
@@ -296,6 +303,28 @@ SecRule REQUEST_URI "@beginsWith /portal/" \\
      pass,\\
      nolog,\\
      ctl:ruleRemoveById=920440"
+
+# ---- Subscription webhook URLs (post-url / post_url) ----
+# Event subscriptions take a webhook delivery URL that the API posts data
+# back to, e.g.:
+#   post-url=https://webhook.example.com:45222/onecloudhook?tenant_id=...
+# libinjection (941100) and the other attack-xss rules routinely misclassify
+# legitimate URLs — with their scheme, query string and separators — as XSS,
+# scoring 5 anomaly points and blocking every subscription create/update.
+# Two API generations, two spellings of the argument:
+#   v2 REST   -> POST /ns-api/v2/subscriptions   arg "post-url"  (hyphen)
+#   v1 legacy -> POST /ns-api/?object=event&action=create  arg "post_url" (underscore)
+# The v1 dispatch endpoint is just /ns-api/, so it can't be scoped by path;
+# instead we scope by the distinctive argument names, which only appear on
+# subscription creates/updates.  Removing a target that isn't present in a
+# request is a no-op, so listing both is safe for every /ns-api/ call.
+SecRule REQUEST_URI "@beginsWith /ns-api/" \\
+    "id:1000011,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetByTag=attack-xss;ARGS:post-url,\\
+     ctl:ruleRemoveTargetByTag=attack-xss;ARGS:post_url"
 
 # ---- iNSight health checks ----
 SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
