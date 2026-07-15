@@ -9,6 +9,7 @@ upgrades, and is ignored under PHP-FPM.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 
@@ -97,6 +98,13 @@ def parse_ips(path: str) -> list[str]:
     content = read_file(path)
     if not content:
         return []
+    # Drop comment lines first. Hand-edited files and NetSapiens' default
+    # .htaccess often carry commented example directives (e.g.
+    # "# Require ip <ADMIN-IP>"); without this the regexes below would scrape
+    # the placeholder as a real IP and carry it into the generated config.
+    content = "\n".join(
+        line for line in content.splitlines() if not line.lstrip().startswith("#")
+    )
     ips: list[str] = []
     # Apache 2.4: Require ip <addr>
     ips.extend(re.findall(r"Require\s+ip\s+(\S+)", content))
@@ -161,13 +169,46 @@ def find_legacy_managed_htaccess() -> list[str]:
     return [p for p in LEGACY_HTACCESS_PATHS if file_exists(p) and is_nssec_managed(p)]
 
 
+def is_valid_ip(value: str) -> bool:
+    """True if *value* is a valid IP address or CIDR network."""
+    try:
+        if "/" in value:
+            ipaddress.ip_network(value, strict=False)
+        else:
+            ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _partition_valid_ips(ips: list[str]) -> tuple[list[str], list[str]]:
+    """Split *ips* into (valid, invalid), preserving order.
+
+    Non-IP tokens can be carried forward from hand-edited legacy .htaccess
+    files or a stale cache. If one reaches the Apache config it fails
+    `apache2ctl configtest` (``ip address '...' appears to be invalid``) and
+    leaves a broken config on disk, so they are filtered out before writing.
+    """
+    valid: list[str] = []
+    invalid: list[str] = []
+    for ip in ips:
+        (valid if is_valid_ip(ip) else invalid).append(ip)
+    return valid, invalid
+
+
 def _render_conf(segments: list[str], ips: list[str]) -> str:
-    """Render the restrict Apache config for the given segments and IPs."""
+    """Render the restrict Apache config for the given segments and IPs.
+
+    Invalid entries are dropped here as a final safety net so no code path can
+    emit a config that breaks Apache (and so a previously-poisoned on-disk
+    config self-heals on the next add/remove/reapply).
+    """
+    valid_ips, _ = _partition_valid_ips(ips)
     content = render(
         RESTRICT_CONF_TEMPLATE,
         managed_marker=RESTRICT_MANAGED_MARKER,
         segments="|".join(segments),
-        ips=ips,
+        ips=valid_ips,
     )
     # Jinja2 strips the trailing newline; ensure the file ends with one.
     if not content.endswith("\n"):
@@ -257,6 +298,10 @@ def init_restrictions(
             if existing_ip not in all_ips:
                 all_ips.append(existing_ip)
 
+    # Drop non-IP tokens (e.g. carried forward from a hand-edited legacy
+    # .htaccess or stale cache) before they reach the config or the cache.
+    all_ips, invalid_ips = _partition_valid_ips(all_ips)
+
     components = get_applicable_components(server_type)
     if not components:
         return [
@@ -266,11 +311,19 @@ def init_restrictions(
     segments = [c["segment"] for c in components]
     label = f"Admin UI restrictions ({'|'.join(segments)})"
 
+    def _with_invalid(msg: str) -> str:
+        if invalid_ips:
+            noun = "entry" if len(invalid_ips) == 1 else "entries"
+            return f"{msg}; skipped {len(invalid_ips)} invalid {noun}: {', '.join(invalid_ips)}"
+        return msg
+
     if dry_run:
         return [
             (
                 label,
-                StepResult(message=f"Would write {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)"),
+                StepResult(
+                    message=_with_invalid(f"Would write {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)")
+                ),
             )
         ]
 
@@ -281,7 +334,9 @@ def init_restrictions(
         return [(label, StepResult(success=False, error=f"Failed to write {RESTRICT_CONF_PATH}"))]
 
     save_cached_ips(all_ips)
-    return [(label, StepResult(message=f"Wrote {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)"))]
+    return [
+        (label, StepResult(message=_with_invalid(f"Wrote {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)")))
+    ]
 
 
 def _segments_for_edit(server_type: str) -> list[str]:
@@ -417,6 +472,9 @@ def reapply_restrictions(
         ]
 
     ips = ["127.0.0.1"] + [ip for ip in cached_ips if ip != "127.0.0.1"]
+    # A cache written by an older nssec may contain invalid tokens; drop them so
+    # reapply can't produce a config that fails apache2ctl configtest.
+    ips, _invalid = _partition_valid_ips(ips)
 
     components = get_applicable_components(server_type)
     if not components:
