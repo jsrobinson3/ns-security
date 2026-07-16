@@ -44,6 +44,17 @@ jobs:
             echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           fi
 
+      - name: Stamp version into the package
+        run: |
+          # The release version comes from the git tag (or workflow input). Write
+          # it into the package sources before building so the binary's
+          # `nssec --version` and the .deb agree — otherwise the hardcoded
+          # __version__ ships stale (e.g. a v0.1.1 .deb reporting 0.1.0).
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/nssec/__init__.py
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+          grep '^__version__' src/nssec/__init__.py
+          grep '^version' pyproject.toml
+
       - name: Install Python dependencies
         run: |
           pip install -e .
