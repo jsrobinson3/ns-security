@@ -656,6 +656,90 @@ class ProtectedRoutesCheck(BaseCheck):
         return self._pass(f"Protected routes: {', '.join(protected)}")
 
 
+# Recommended Apache response-header directives. Each entry is
+# (display name, tokens that must all appear on one non-comment line,
+# the directive to add). Scanned against security.conf.
+#
+# Scope: only headers best handled at the Apache layer and not covered
+# elsewhere. Content-Security-Policy and X-Frame-Options are intentionally
+# excluded because the application already emits them, and Server version
+# disclosure is covered by APACHE-001.
+_RECOMMENDED_HEADERS = [
+    (
+        "X-Powered-By",
+        ["header", "unset", "x-powered-by"],
+        "Header unset X-Powered-By",
+    ),
+    (
+        "X-Content-Type-Options",
+        ["header", "x-content-type-options", "nosniff"],
+        'Header set X-Content-Type-Options "nosniff"',
+    ),
+]
+
+
+def _directive_present(content: str, tokens: list[str]) -> bool:
+    """Return True if any non-comment line contains all tokens (case-insensitive)."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lower = stripped.lower()
+        if all(token in lower for token in tokens):
+            return True
+    return False
+
+
+class ApacheSecurityHeadersCheck(BaseCheck):
+    """Check Apache sets recommended security response headers."""
+
+    check_id = "APACHE-004"
+    name = "Apache Security Response Headers"
+    description = "Verify Apache strips X-Powered-By and sets X-Content-Type-Options"
+    severity = Severity.MEDIUM
+    applies_to = ["core", "ndp", "recording", "combo"]
+    reference = "https://owasp.org/www-project-secure-headers/"
+
+    def run(self) -> CheckResult:
+        configs = [
+            "/etc/apache2/conf-enabled/security.conf",
+            "/etc/apache2/apache2.conf",
+        ]
+
+        content = None
+        for config_path in configs:
+            if file_exists(config_path):
+                file_content = read_file(config_path)
+                if file_content:
+                    content = f"{content}\n{file_content}" if content else file_content
+
+        if content is None:
+            return self._skip("Apache security config not found or unreadable")
+
+        missing = [
+            (name, directive)
+            for name, tokens, directive in _RECOMMENDED_HEADERS
+            if not _directive_present(content, tokens)
+        ]
+
+        if not missing:
+            return self._pass("Apache security response headers are configured")
+
+        names = ", ".join(name for name, _ in missing)
+        directives = "; ".join(directive for _, directive in missing)
+        return self._warn(
+            f"Apache missing security response headers: {names}",
+            details=(
+                "These headers reduce information disclosure and MIME-sniffing "
+                "attacks. Requires mod_headers (sudo a2enmod headers)"
+            ),
+            remediation=(
+                f"Add to /etc/apache2/conf-enabled/security.conf: {directives} "
+                "then reload Apache with: sudo systemctl reload apache2"
+            ),
+        )
+
+
 # =============================================================================
 # WAF/ModSecurity Checks
 # =============================================================================
@@ -1315,6 +1399,7 @@ ALL_CHECKS: list[BaseCheck] = [
     ApacheServerTokensCheck(),
     ApacheHtaccessCheck(),
     ProtectedRoutesCheck(),
+    ApacheSecurityHeadersCheck(),
     # WAF/ModSecurity
     ModSecurityInstalledCheck(),
     ModSecurityEnabledCheck(),
