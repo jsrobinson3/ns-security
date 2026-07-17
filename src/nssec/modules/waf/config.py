@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "6"
+NS_EXCLUSIONS_VERSION = "7"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -186,16 +186,22 @@ SECURITY2_CONF_TEMPLATE = """\
     # Main ModSecurity config
     IncludeOptional /etc/modsecurity/modsecurity.conf
 
-    # OWASP CRS setup and rules
+    # OWASP CRS setup
     IncludeOptional {{ crs_path }}/crs-setup.conf
     IncludeOptional {{ crs_path }}/plugins/*-config.conf
     IncludeOptional {{ crs_path }}/plugins/*-before.conf
+
+    # NetSapiens-specific exclusions (MUST load before the CRS rules: the
+    # exclusions are runtime ctl directives, which only suppress rules that
+    # execute later in the transaction. Within a phase, execution order is
+    # load order — loaded after the rules, the phase-1 exclusions such as
+    # the localhost and admin-IP allowlists run after phase-1 CRS rules
+    # like 920350/920180 have already fired.)
+    IncludeOptional /etc/modsecurity/netsapiens-exclusions.conf
+
+    # OWASP CRS rules
     IncludeOptional {{ crs_path }}/rules/*.conf
     IncludeOptional {{ crs_path }}/plugins/*-after.conf
-
-    # NetSapiens-specific exclusions (MUST load after CRS rules so that
-    # SecRuleUpdateTargetById directives can find the rules they modify)
-    IncludeOptional /etc/modsecurity/netsapiens-exclusions.conf
 </IfModule>
 """
 
@@ -208,6 +214,11 @@ NS_EXCLUSIONS_TEMPLATE = """\
 #
 # These rules prevent false positives on the NetSapiens management UI
 # and API endpoints while keeping CRS protection active for everything else.
+#
+# All exclusions are runtime ctl directives, which only suppress rules that
+# execute later in the same transaction. This file must therefore be loaded
+# BEFORE the CRS rules — otherwise the phase-1 exclusions (localhost and IP
+# allowlists) run after phase-1 CRS rules have already fired.
 
 # ---- Admin UI form submissions and third-party tracking cookies ----
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
@@ -335,9 +346,10 @@ SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
      ctl:ruleRemoveByTag=OWASP_CRS"
 
 # ---- Localhost internal traffic ----
-# NS services (NmsSBus, ns-api, cfg) communicate over localhost.
-# Rules 921110, 920180, 920350 false-positive on internal SIP/API calls.
-SecRule REMOTE_ADDR "@ipMatch 127.0.0.1" \\
+# NS services (NmsSBus, ns-api, cfg) communicate over localhost and must
+# never be flagged or blocked. Rules 921110, 920180, 920350 false-positive
+# on internal SIP/API calls.
+SecRule REMOTE_ADDR "@ipMatch 127.0.0.1,::1" \\
     "id:1000005,\\
      phase:1,\\
      pass,\\

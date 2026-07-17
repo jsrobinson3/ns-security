@@ -287,7 +287,7 @@ These community projects provide additional NetSapiens security capabilities:
 - [x] ModSecurity installation and configuration with OWASP CRS
 - [x] NetSapiens-specific WAF exclusion rules
 - [x] ModSecurity WAF monitoring dashboard
-- [x] .htaccess IP restrictions for sensitive paths
+- [x] Apache-config IP restrictions for sensitive paths (`waf restrict`)
 - [ ] MySQL password rotation across all NS services
 - [ ] Fail2ban SIP plugin for NetSapiens
 
