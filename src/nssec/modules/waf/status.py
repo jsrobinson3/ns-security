@@ -40,6 +40,7 @@ class WafStatus:
     exclusions_version: str | None = None
     exclusions_current: bool = False
     exclusions_included: bool = False
+    exclusions_ordered: bool = True
     crs_path_valid: bool = False
     exclusions_admin_ips: int = 0
     exclusions_nodeping_ips: int = 0
@@ -120,6 +121,34 @@ def _parse_security2_crs_path(content: str) -> str | None:
     return None
 
 
+def _exclusions_load_before_crs(content: str) -> bool:
+    """True if the exclusions include comes before the CRS rules include.
+
+    The exclusions are runtime ctl directives: they only suppress rules that
+    execute later in the transaction, so if the exclusions file is included
+    after the CRS rules, the phase-1 exclusions (localhost and IP allowlists)
+    run after phase-1 CRS rules like 920350/920180 have already fired.
+
+    Returns True when there is nothing to mis-order (no exclusions include —
+    covered by exclusions_included — or no CRS rules include).
+    """
+    excl_line = None
+    rules_line = None
+    for i, line in enumerate(content.splitlines()):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if excl_line is None and (
+            NS_EXCLUSIONS_CONF in stripped or "/etc/modsecurity/*.conf" in stripped
+        ):
+            excl_line = i
+        if rules_line is None and re.search(r"/rules/\*\.conf", stripped):
+            rules_line = i
+    if excl_line is None or rules_line is None:
+        return True
+    return excl_line < rules_line
+
+
 def _parse_exclusions_meta(content: str) -> tuple[str | None, str | None, int, int]:
     """Parse exclusions file for version, hash, admin IP count, NodePing IP count."""
     version = None
@@ -185,6 +214,7 @@ def get_waf_status() -> WafStatus:
         has_explicit = NS_EXCLUSIONS_CONF in sec2_content
         has_wildcard = "/etc/modsecurity/*.conf" in sec2_content
         status.exclusions_included = has_explicit or has_wildcard
+        status.exclusions_ordered = _exclusions_load_before_crs(sec2_content)
 
         status.crs_path_valid = (
             sec2_crs_path is not None

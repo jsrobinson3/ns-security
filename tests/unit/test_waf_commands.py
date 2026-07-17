@@ -435,6 +435,46 @@ class TestWafUpdateExclusionsNodeping:
         assert result.exit_code == 0
         assert "Warning" in result.output
 
+    def test_rewrites_security2_conf(self, runner, mock_installer):
+        """Should refresh security2.conf so exclusions load before CRS rules."""
+        step = MagicMock()
+        step.success = True
+        step.skipped = False
+        step.message = "Updated"
+        mock_installer.install_exclusions.return_value = step
+        mock_installer.write_security2_conf.return_value = step
+        mock_installer.validate_config.return_value = step
+        mock_installer.reload_apache.return_value = step
+
+        with patch(
+            "nssec.modules.waf.fetch_nodeping_probe_ips",
+            return_value=([], ""),
+        ):
+            result = runner.invoke(waf, ["update-exclusions", "-y"])
+
+        assert result.exit_code == 0
+        mock_installer.write_security2_conf.assert_called_once()
+
+    def test_fails_when_security2_rewrite_fails(self, runner, mock_installer):
+        """Should exit non-zero when the security2.conf rewrite fails."""
+        ok = MagicMock()
+        ok.success = True
+        ok.message = "Updated"
+        bad = MagicMock()
+        bad.success = False
+        bad.error = "disk full"
+        mock_installer.install_exclusions.return_value = ok
+        mock_installer.write_security2_conf.return_value = bad
+
+        with patch(
+            "nssec.modules.waf.fetch_nodeping_probe_ips",
+            return_value=([], ""),
+        ):
+            result = runner.invoke(waf, ["update-exclusions", "-y"])
+
+        assert result.exit_code == 1
+        assert "disk full" in result.output
+
 
 class TestWafUpdate:
     """Tests for waf update command."""
