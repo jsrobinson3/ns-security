@@ -21,6 +21,8 @@ from nssec.core.checklist import (
     service_enabled,
 )
 from nssec.core.ssh import file_exists, is_directory, read_file
+from nssec.modules.waf.config import RESTRICT_COMPONENTS, RESTRICT_CONF_PATH
+from nssec.modules.waf.restrict import parse_conf_segments, parse_ips
 
 # NetSapiens documentation base URL
 NS_DOCS = "https://documentation.netsapiens.com"
@@ -569,7 +571,12 @@ class ApacheServerTokensCheck(BaseCheck):
 
 
 class ApacheHtaccessCheck(BaseCheck):
-    """Check if .htaccess is enabled for protected routes."""
+    """Check if .htaccess is enabled for protected routes.
+
+    Only relevant when admin-route protection relies on legacy .htaccess
+    files. When the Apache-config method (nssec-restrict.conf) is active,
+    .htaccess is not part of the security posture and this check is skipped.
+    """
 
     check_id = "APACHE-002"
     name = "Apache AllowOverride"
@@ -578,6 +585,12 @@ class ApacheHtaccessCheck(BaseCheck):
     applies_to = ["core", "ndp", "recording", "combo"]
 
     def run(self) -> CheckResult:
+        if file_exists(RESTRICT_CONF_PATH) and parse_ips(RESTRICT_CONF_PATH):
+            return self._skip(
+                f"Not applicable - IP restrictions are managed via {RESTRICT_CONF_PATH}, "
+                "which does not depend on .htaccess"
+            )
+
         configs = [
             "/etc/apache2/apache2.conf",
             "/etc/apache2/sites-enabled/000-default.conf",
@@ -606,7 +619,14 @@ class ApacheHtaccessCheck(BaseCheck):
 
 
 class ProtectedRoutesCheck(BaseCheck):
-    """Check if sensitive NetSapiens routes have .htaccess protection."""
+    """Check if sensitive NetSapiens admin routes have IP restrictions.
+
+    A route counts as protected when it is covered by the nssec-managed
+    Apache config (nssec-restrict.conf, the current method) or by a
+    per-directory .htaccess with IP directives (legacy or hand-written).
+    ns-api is not checked - it serves the REST API and is intentionally
+    left reachable.
+    """
 
     check_id = "APACHE-003"
     name = "Protected Routes Configuration"
@@ -616,32 +636,37 @@ class ProtectedRoutesCheck(BaseCheck):
     reference = f"{NS_DOCS} - search 'Securing Your NetSapiens System'"
 
     def run(self) -> CheckResult:
-        protected_paths = [
-            ("/usr/local/NetSapiens/SiPbx/html/SiPbx", "Admin UI"),
-            ("/usr/local/NetSapiens/SiPbx/html/ns-api", "API"),
-            ("/usr/local/NetSapiens/ndp", "NDP"),
-            ("/usr/local/NetSapiens/LiCf/html/LiCf", "LiCf Recording"),
-        ]
+        conf_segments = parse_conf_segments(RESTRICT_CONF_PATH)
+        conf_has_ips = bool(parse_ips(RESTRICT_CONF_PATH))
 
         unprotected = []
         protected = []
 
-        for path_str, name in protected_paths:
-            htaccess_path = f"{path_str}/.htaccess"
-            if is_directory(path_str):
-                if file_exists(htaccess_path):
-                    htaccess = Path(htaccess_path)
-                    has_ip_restrict = (
-                        file_contains(htaccess, "Allow from", ignore_comments=True)
-                        or file_contains(htaccess, "Require ip", ignore_comments=True)
-                        or file_contains(htaccess, "Deny from", ignore_comments=True)
-                    )
-                    if has_ip_restrict:
-                        protected.append(name)
-                    else:
-                        unprotected.append(f"{name} (no IP restrictions in .htaccess)")
-                else:
-                    unprotected.append(f"{name} (no .htaccess)")
+        for component in RESTRICT_COMPONENTS:
+            if not is_directory(component["directory"]):
+                continue
+            name = component["name"]
+
+            if conf_has_ips and component["segment"] in conf_segments:
+                protected.append(name)
+                continue
+
+            htaccess_path = f"{component['directory']}/.htaccess"
+            if file_exists(htaccess_path):
+                htaccess = Path(htaccess_path)
+                has_ip_restrict = (
+                    file_contains(htaccess, "Allow from", ignore_comments=True)
+                    or file_contains(htaccess, "Require ip", ignore_comments=True)
+                    or file_contains(htaccess, "Deny from", ignore_comments=True)
+                )
+                if has_ip_restrict:
+                    protected.append(f"{name} (legacy .htaccess)")
+                    continue
+
+            if conf_has_ips:
+                unprotected.append(f"{name} (not covered by {RESTRICT_CONF_PATH})")
+            else:
+                unprotected.append(f"{name} (no IP restrictions)")
 
         if not protected and not unprotected:
             return self._skip("NetSapiens web directories not found")
@@ -650,7 +675,10 @@ class ProtectedRoutesCheck(BaseCheck):
             return self._fail(
                 f"Unprotected routes: {', '.join(unprotected)}",
                 details="Admin routes should restrict access by IP",
-                remediation="Run 'nssec waf restrict init' to create .htaccess IP restrictions",
+                remediation=(
+                    "Run 'nssec waf restrict init' to create the Apache "
+                    f"IP restriction config at {RESTRICT_CONF_PATH}"
+                ),
             )
 
         return self._pass(f"Protected routes: {', '.join(protected)}")
@@ -1323,26 +1351,31 @@ class AdminUIProtectionCheck(BaseCheck):
     reference = f"{NS_DOCS} - search 'Securing Your NetSapiens System'"
 
     def run(self) -> CheckResult:
-        htaccess_path = "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess"
+        # Current method: Apache config covering the SiPbx admin UI
+        if "SiPbx" in parse_conf_segments(RESTRICT_CONF_PATH) and parse_ips(RESTRICT_CONF_PATH):
+            return self._pass(f"Admin UI restricted by IP via {RESTRICT_CONF_PATH}")
 
-        if not file_exists(htaccess_path):
-            return self._warn(
-                ".htaccess file not found for Admin UI",
-                details="Admin UI may not have IP restrictions configured",
+        # Legacy / hand-written method: per-directory .htaccess
+        htaccess_path = "/usr/local/NetSapiens/SiPbx/html/SiPbx/.htaccess"
+        if file_exists(htaccess_path):
+            htaccess = Path(htaccess_path)
+            has_legacy = file_contains(htaccess, "Allow from", ignore_comments=True)
+            has_modern = file_contains(htaccess, "Require ip", ignore_comments=True)
+            if has_legacy or has_modern:
+                return self._pass("Admin UI has IP restrictions configured (legacy .htaccess)")
+
+            return self._fail(
+                "Admin UI does not have IP restrictions",
+                remediation=(
+                    "Run 'nssec waf restrict init' to create IP restrictions, "
+                    f"or see {NS_DOCS} - search 'Securing Your NetSapiens System'"
+                ),
             )
 
-        htaccess = Path(htaccess_path)
-        has_legacy = file_contains(htaccess, "Allow from", ignore_comments=True)
-        has_modern = file_contains(htaccess, "Require ip", ignore_comments=True)
-        if has_legacy or has_modern:
-            return self._pass("Admin UI has IP restrictions configured")
-
-        return self._fail(
-            "Admin UI does not have IP restrictions",
-            remediation=(
-                "Run 'nssec waf restrict init' to create IP restrictions, "
-                f"or see {NS_DOCS} - search 'Securing Your NetSapiens System'"
-            ),
+        return self._warn(
+            "No IP restrictions found for Admin UI",
+            details=f"Neither {RESTRICT_CONF_PATH} nor a .htaccess file restricts the Admin UI",
+            remediation="Run 'nssec waf restrict init' to create IP restrictions",
         )
 
 

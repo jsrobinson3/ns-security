@@ -176,6 +176,12 @@ def _build_status_table(status):
                 "[red]not loaded[/red] — security2.conf does not include exclusions file, "
                 "run [cyan]nssec waf init[/cyan] to fix"
             )
+        elif not status.exclusions_ordered:
+            excl_val = (
+                "[yellow]loaded after CRS rules[/yellow] — localhost/IP allowlist "
+                "exclusions cannot suppress phase-1 rules (e.g. 920350), "
+                "run [cyan]nssec waf update-exclusions[/cyan] to fix"
+            )
         elif not status.crs_path_valid:
             excl_val = (
                 "[yellow]loaded but ineffective[/yellow] — "
@@ -401,7 +407,10 @@ def waf_update_exclusions(yes, dry_run):
     """Re-deploy NetSapiens WAF exclusion rules.
 
     Updates /etc/modsecurity/netsapiens-exclusions.conf from the latest
-    nssec templates without re-running the full waf init.
+    nssec templates without re-running the full waf init. Also refreshes
+    the security2.conf include layout so the exclusions load before the
+    CRS rules (required for the localhost/IP allowlist exclusions to
+    suppress phase-1 rules).
     """
     from nssec.modules.waf import ModSecurityInstaller
 
@@ -425,6 +434,17 @@ def waf_update_exclusions(yes, dry_run):
         console.print(f"  [red]Error:[/red] {result.error}")
         raise SystemExit(1)
     console.print(f"  [green]Done:[/green] {result.message}")
+
+    # Rewrite security2.conf so the exclusions load before the CRS rules
+    # (no-op on wildcard-include setups, where they already do).
+    sec2 = installer.write_security2_conf()
+    if not sec2.success:
+        console.print(f"  [red]Error:[/red] {sec2.error}")
+        raise SystemExit(1)
+    if sec2.skipped:
+        console.print(f"  [dim]Skipped:[/dim] {sec2.message}")
+    else:
+        console.print(f"  [green]Done:[/green] {sec2.message}")
 
     if dry_run:
         console.print("\n[yellow]Dry run \u2014 no further changes.[/yellow]")
