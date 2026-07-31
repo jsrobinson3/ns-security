@@ -568,6 +568,35 @@ class TestNodepingExclusionsTemplate:
         assert "ruleRemoveByTag=OWASP_CRS" in rendered
 
 
+class TestOAuth2TokenExclusion:
+    """Tests for the /ns-api/oauth2/token 920180 exclusion in the template."""
+
+    def _render(self):
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        return Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=[],
+        )
+
+    def test_scopes_rule_to_token_endpoint(self):
+        """Exclusion should target the OAuth2 token endpoint only."""
+        rendered = self._render()
+        assert '@beginsWith /ns-api/oauth2/token' in rendered
+        assert "id:1000012" in rendered
+
+    def test_removes_only_920180(self):
+        """Exclusion should drop only rule 920180, not the whole rule set."""
+        rendered = self._render()
+        assert "ctl:ruleRemoveById=920180" in rendered
+        # This exclusion must not broadly disable CRS on the endpoint.
+        lines = [line for line in rendered.split("\n") if "1000012" in line]
+        assert lines
+        block = rendered.split("id:1000012")[1].split("SecRule")[0]
+        assert "ruleRemoveByTag=OWASP_CRS" not in block
+
+
 class TestInstallCrsV4UpdatesSetup:
     """Tests for install_crs_v4 updating crs-setup.conf when v4 already present."""
 

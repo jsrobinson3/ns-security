@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "6"
+NS_EXCLUSIONS_VERSION = "7"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -325,6 +325,20 @@ SecRule REQUEST_URI "@beginsWith /ns-api/" \\
      nolog,\\
      ctl:ruleRemoveTargetByTag=attack-xss;ARGS:post-url,\\
      ctl:ruleRemoveTargetByTag=attack-xss;ARGS:post_url"
+
+# ---- OAuth2 token endpoint empty-body POSTs ----
+# OAuth2 clients (e.g. client-credentials token refresh) routinely POST to the
+# token endpoint with an empty body and omit the Content-Length header.  Rule
+# 920180 flags any POST lacking both Content-Length and Transfer-Encoding,
+# adding 3 anomaly points on every token request — harmless noise on its own,
+# but it erodes the margin before the blocking threshold.  Scope the removal to
+# the token endpoint so protocol enforcement stays active everywhere else.
+SecRule REQUEST_URI "@beginsWith /ns-api/oauth2/token" \\
+    "id:1000012,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveById=920180"
 
 # ---- iNSight health checks ----
 SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
