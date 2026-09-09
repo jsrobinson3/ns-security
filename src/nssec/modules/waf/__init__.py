@@ -6,6 +6,7 @@ with OWASP CRS v4 on Apache2 for NetSapiens servers.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import shutil
 from pathlib import Path
@@ -69,6 +70,26 @@ def fetch_nodeping_probe_ips() -> tuple[list[str], str]:
     return fetch_nodeping_ips()
 
 
+def normalize_ipmatch_entry(ip: str) -> str:
+    """Strip a redundant full-host CIDR suffix ("/32" or "/128").
+
+    ModSecurity's @ipMatch operator fails to parse full-host CIDR notation —
+    "SecRule REMOTE_ADDR \"@ipMatch 1.2.3.4/32\"" raises "Error creating rule:
+    Could not add entry" at Apache startup, even though the equivalent bare
+    address works fine (SpiderLabs/ModSecurity#849). A bare address is exactly
+    equivalent to a /32 (or /128) network, so dropping the suffix is lossless.
+    """
+    if "/" not in ip:
+        return ip
+    try:
+        network = ipaddress.ip_network(ip, strict=False)
+    except ValueError:
+        return ip
+    if network.num_addresses == 1:
+        return str(network.network_address)
+    return ip
+
+
 def get_allowlisted_ips() -> list[str]:
     """Parse allowlisted admin IPs from the deployed exclusions conf."""
     content = read_file(NS_EXCLUSIONS_CONF)
@@ -84,6 +105,7 @@ def get_allowlisted_ips() -> list[str]:
 
 def add_allowlisted_ip(ip: str) -> StepResult:
     """Add an IP address to the allowlist and regenerate exclusions config."""
+    ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip in current_ips:
         return StepResult(skipped=True, message=f"{ip} already allowlisted")
@@ -107,6 +129,7 @@ def add_allowlisted_ip(ip: str) -> StepResult:
 
 def remove_allowlisted_ip(ip: str) -> StepResult:
     """Remove an IP address from the allowlist and regenerate exclusions config."""
+    ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip not in current_ips:
         return StepResult(skipped=True, message=f"{ip} not in allowlist")

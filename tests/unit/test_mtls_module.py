@@ -294,3 +294,27 @@ class TestRemoveIpFromRequireany:
     def test_returns_error_when_no_block(self):
         _, error = remove_ip_from_requireany("no block here", "1.2.3.4")
         assert "Could not find" in error
+
+
+class TestBackupFile:
+    """Tests for backup_file's snapshot-refresh behavior.
+
+    rollback() restores from this same .bak.nssec file on a failed
+    `apache2ctl configtest`. A backup that is only ever created once (and
+    left stale after that) makes rollback discard every successful edit made
+    since the first snapshot, not just the one that failed.
+    """
+
+    def test_overwrites_existing_backup_with_current_content(self, tmp_path):
+        from nssec.modules.mtls.utils import backup_file
+
+        target = tmp_path / "mod_ssl.conf"
+        backup = tmp_path / "mod_ssl.conf.bak.nssec"
+
+        target.write_text("state-1")
+        backup_file(str(target))
+        assert backup.read_text() == "state-1"
+
+        target.write_text("state-2")
+        backup_file(str(target))
+        assert backup.read_text() == "state-2"

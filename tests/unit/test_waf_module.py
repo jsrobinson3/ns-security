@@ -60,6 +60,41 @@ SecRule REMOTE_ADDR "@ipMatch 10.0.0.0/8" "id:1000101,phase:1,pass"
         assert result == ["10.0.0.0/8"]
 
 
+class TestNormalizeIpmatchEntry:
+    """Tests for normalize_ipmatch_entry.
+
+    ModSecurity's @ipMatch operator fails to parse a full-host CIDR suffix
+    ("/32" for IPv4, "/128" for IPv6) — SpiderLabs/ModSecurity#849 — so
+    entries must be reduced to a bare address before being written into the
+    exclusions config.
+    """
+
+    def test_strips_ipv4_host_mask(self):
+        from nssec.modules.waf import normalize_ipmatch_entry
+
+        assert normalize_ipmatch_entry("54.196.79.211/32") == "54.196.79.211"
+
+    def test_strips_ipv6_host_mask(self):
+        from nssec.modules.waf import normalize_ipmatch_entry
+
+        assert normalize_ipmatch_entry("2001:db8::1/128") == "2001:db8::1"
+
+    def test_leaves_cidr_ranges_untouched(self):
+        from nssec.modules.waf import normalize_ipmatch_entry
+
+        assert normalize_ipmatch_entry("10.0.0.0/8") == "10.0.0.0/8"
+
+    def test_leaves_bare_ip_untouched(self):
+        from nssec.modules.waf import normalize_ipmatch_entry
+
+        assert normalize_ipmatch_entry("192.168.1.100") == "192.168.1.100"
+
+    def test_passes_through_unparseable_input(self):
+        from nssec.modules.waf import normalize_ipmatch_entry
+
+        assert normalize_ipmatch_entry("not-an-ip/32") == "not-an-ip/32"
+
+
 class TestAddAllowlistedIp:
     """Tests for add_allowlisted_ip function."""
 
@@ -106,6 +141,32 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
 
         assert not result.success
         assert "Failed to write" in result.error
+
+    def test_normalizes_full_host_cidr_before_storing(self, mock_file_ops):
+        """A /32 entry must be stripped before it reaches the @ipMatch rule
+        (ModSecurity fails to parse it — SpiderLabs/ModSecurity#849)."""
+        from nssec.modules.waf import add_allowlisted_ip
+
+        mock_file_ops["read"].return_value = ""
+        result = add_allowlisted_ip("54.196.79.211/32")
+
+        assert result.success
+        assert result.message == "Added 54.196.79.211 to allowlist"
+        _, kwargs = mock_file_ops["render"].call_args
+        assert kwargs["admin_ips"] == ["54.196.79.211"]
+
+    def test_dedupes_against_previously_normalized_entry(self, mock_file_ops):
+        """Re-adding the same host as "x.x.x.x/32" must match the bare
+        address already on file instead of being treated as a new entry."""
+        from nssec.modules.waf import add_allowlisted_ip
+
+        mock_file_ops["read"].return_value = (
+            'SecRule REMOTE_ADDR "@ipMatch 54.196.79.211" "id:1000101,phase:1,pass"\n'
+        )
+        result = add_allowlisted_ip("54.196.79.211/32")
+
+        assert result.skipped
+        mock_file_ops["write"].assert_not_called()
 
 
 class TestRemoveAllowlistedIp:
@@ -159,6 +220,19 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
 
         assert not result.success
         assert "Failed to write" in result.error
+
+    def test_normalizes_full_host_cidr_before_removing(self, mock_file_ops):
+        """Removing "x.x.x.x/32" must match the bare address stored on file."""
+        from nssec.modules.waf import remove_allowlisted_ip
+
+        mock_file_ops["read"].return_value = (
+            'SecRule REMOTE_ADDR "@ipMatch 54.196.79.211" "id:1000101,phase:1,pass"\n'
+        )
+        result = remove_allowlisted_ip("54.196.79.211/32")
+
+        assert result.success
+        assert "54.196.79.211" in result.message
+        mock_file_ops["write"].assert_called_once()
 
 
 class TestEvasiveConfTemplate:
@@ -595,6 +669,66 @@ class TestOAuth2TokenExclusion:
         assert lines
         block = rendered.split("id:1000012")[1].split("SecRule")[0]
         assert "ruleRemoveByTag=OWASP_CRS" not in block
+
+
+class TestSanitiseArgExclusion:
+    """Tests for the audit-log credential redaction rule (id:1000013)."""
+
+    def _render(self):
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        return Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=[],
+        )
+
+    def _block(self, rendered):
+        # The action list only: from after the id up to the closing quote of
+        # the SecAction directive.
+        return rendered.split("id:1000013")[1].split('"')[0]
+
+    def test_rule_present_as_unconditional_secaction(self):
+        rendered = self._render()
+        assert "id:1000013" in rendered
+        # Unconditional SecAction, not a SecRule gated on a condition.
+        preamble = rendered.split("id:1000013")[0]
+        assert preamble.rstrip().endswith('SecAction \\\n    "')
+
+    def test_masks_every_requested_argument_name(self):
+        block = self._block(self._render())
+        for name in (
+            "password",
+            "client_secret",
+            "refresh_token",
+            "access_token",
+            "auth_code",
+            "nsToken",
+            "ns_t",
+        ):
+            assert f"sanitiseArg:{name}" in block
+
+    def test_runs_in_phase_2_per_reference_manual(self):
+        assert "phase:2" in self._block(self._render())
+
+    def test_is_non_blocking(self):
+        block = self._block(self._render())
+        assert "pass" in block
+        assert "nolog" in block
+        for disruptive in ("deny", "block", "drop", "redirect"):
+            assert disruptive not in block
+
+    def test_does_not_suppress_any_detection_rule(self):
+        block = self._block(self._render())
+        assert "ruleRemove" not in block
+        assert "ctl:" not in block
+
+    def test_not_miscounted_as_an_allowlisted_ip(self):
+        from nssec.modules.waf.status import _parse_exclusions_meta
+
+        _, _, admin_ips, nodeping_ips = _parse_exclusions_meta(self._render())
+        assert admin_ips == 0
+        assert nodeping_ips == 0
 
 
 class TestInstallCrsV4UpdatesSetup:
