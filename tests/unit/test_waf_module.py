@@ -583,7 +583,7 @@ class TestOAuth2TokenExclusion:
     def test_scopes_rule_to_token_endpoint(self):
         """Exclusion should target the OAuth2 token endpoint only."""
         rendered = self._render()
-        assert '@beginsWith /ns-api/oauth2/token' in rendered
+        assert "@beginsWith /ns-api/oauth2/token" in rendered
         assert "id:1000012" in rendered
 
     def test_removes_only_920180(self):
@@ -595,6 +595,77 @@ class TestOAuth2TokenExclusion:
         assert lines
         block = rendered.split("id:1000012")[1].split("SecRule")[0]
         assert "ruleRemoveByTag=OWASP_CRS" not in block
+
+
+class TestLegacyMobileFalsePositiveExclusions:
+    """Tests for the 942220 / 933150 exclusions covering legacy mobile clients."""
+
+    def _render(self):
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        return Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=[],
+        )
+
+    def _block(self, rendered, rule_id):
+        """Return the directive body for a single exclusion rule."""
+        return rendered.split(f"id:{rule_id}")[1].split("SecRule")[0]
+
+    def test_pagination_limit_scoped_to_args_limit(self):
+        """942220 should be dropped only for ARGS:limit, only under /ns-api/."""
+        rendered = self._render()
+        assert "id:1000013" in rendered
+        block = self._block(rendered, "1000013")
+        assert "ctl:ruleRemoveTargetById=942220;ARGS:limit" in block
+        # Scoped to the API prefix, not global.
+        preamble = rendered.split("id:1000013")[0].rsplit("SecRule", 1)[1]
+        assert "@beginsWith /ns-api/" in preamble
+
+    def test_pagination_limit_does_not_remove_whole_rule(self):
+        """942220 must stay active for every other argument."""
+        rendered = self._render()
+        block = self._block(rendered, "1000013")
+        assert "ruleRemoveById=942220" not in block
+        assert "ruleRemoveByTag" not in block
+
+    def test_config_key_scoped_to_request_filename(self):
+        """933150 should be dropped only for REQUEST_FILENAME on config reads."""
+        rendered = self._render()
+        assert "id:1000014" in rendered
+        block = self._block(rendered, "1000014")
+        assert "ctl:ruleRemoveTargetById=933150;REQUEST_FILENAME" in block
+        preamble = rendered.split("id:1000014")[0].rsplit("SecRule", 1)[1]
+        assert "@beginsWith /ns-api/v2/configurations/" in preamble
+
+    def test_config_key_does_not_remove_whole_rule(self):
+        """933150 must still scan args and bodies under the config namespace."""
+        rendered = self._render()
+        block = self._block(rendered, "1000014")
+        assert "ruleRemoveById=933150" not in block
+        assert "ruleRemoveByTag" not in block
+
+    def test_exclusions_run_in_phase_1(self):
+        """ctl exclusions must run before the phase:2 rules they disarm.
+
+        Both 942220 and 933150 are phase:2 rules.  Registering the ctl in
+        phase:1 guarantees it takes effect before they run, independently of
+        whether this file is included before or after the CRS rules — within
+        a single phase, execution order is load order, so a phase:2 ctl only
+        works while the exclusions happen to load first.
+        """
+        rendered = self._render()
+        for rule_id in ("1000013", "1000014"):
+            assert "phase:1" in self._block(rendered, rule_id)
+
+    def test_exclusion_rule_ids_are_unique(self):
+        """Every managed exclusion must have a distinct rule ID."""
+        import re
+
+        rendered = self._render()
+        ids = re.findall(r"id:(\d{7})", rendered)
+        assert len(ids) == len(set(ids)), f"duplicate exclusion IDs: {ids}"
 
 
 class TestInstallCrsV4UpdatesSetup:
