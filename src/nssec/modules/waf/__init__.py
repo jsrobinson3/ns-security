@@ -69,17 +69,32 @@ def fetch_nodeping_probe_ips() -> tuple[list[str], str]:
     return fetch_nodeping_ips()
 
 
-def get_allowlisted_ips() -> list[str]:
-    """Parse allowlisted admin IPs from the deployed exclusions conf."""
+def _parse_allowlist_ips(id_pattern: str) -> list[str]:
+    """Extract @ipMatch IPs from deployed allowlist rules matching id_pattern.
+
+    The deployed conf is the only store for these IPs — there is no separate
+    state file — so every render has to read back what is already there.
+    """
     content = read_file(NS_EXCLUSIONS_CONF)
     if not content:
         return []
-    # Match SecRule with @ipMatch followed by id:10001xx (admin IP rules)
     return re.findall(
-        r'SecRule REMOTE_ADDR "@ipMatch\s+([^\s"]+)"[^"]*"id:10001\d+',
+        rf'SecRule REMOTE_ADDR "@ipMatch\s+([^\s"]+)"[^"]*"id:{id_pattern}',
         content,
         re.DOTALL,
     )
+
+
+def get_allowlisted_ips() -> list[str]:
+    """Parse allowlisted admin IPs from the deployed exclusions conf."""
+    # Admin IP rules are numbered from 1000100 (id:10001xx)
+    return _parse_allowlist_ips(r"10001\d+")
+
+
+def get_nodeping_ips() -> list[str]:
+    """Parse allowlisted NodePing probe IPs from the deployed exclusions conf."""
+    # NodePing probe rules are numbered from 1000200 (id:10002xx)
+    return _parse_allowlist_ips(r"10002\d+")
 
 
 def add_allowlisted_ip(ip: str) -> StepResult:
@@ -96,6 +111,7 @@ def add_allowlisted_ip(ip: str) -> StepResult:
     content = render(
         NS_EXCLUSIONS_TEMPLATE,
         admin_ips=new_ips,
+        nodeping_ips=get_nodeping_ips(),
         version=NS_EXCLUSIONS_VERSION,
         template_hash=NS_EXCLUSIONS_HASH,
     )
@@ -119,6 +135,7 @@ def remove_allowlisted_ip(ip: str) -> StepResult:
     content = render(
         NS_EXCLUSIONS_TEMPLATE,
         admin_ips=new_ips,
+        nodeping_ips=get_nodeping_ips(),
         version=NS_EXCLUSIONS_VERSION,
         template_hash=NS_EXCLUSIONS_HASH,
     )
@@ -455,17 +472,51 @@ class ModSecurityInstaller:
         admin_ips: list[str] | None = None,
         nodeping_ips: list[str] | None = None,
     ) -> StepResult:
-        """Write NetSapiens-specific ModSecurity exclusions."""
+        """Write NetSapiens-specific ModSecurity exclusions.
+
+        The template is re-rendered in full on every write, and the deployed
+        conf is the only store for allowlisted IPs.  ``None`` therefore means
+        "keep whatever is already deployed" — otherwise a caller that knows
+        about one list (e.g. update-exclusions, which fetches NodePing IPs but
+        has no notion of the admin allowlist) would silently drop the other.
+        Pass an empty list to clear a section deliberately.
+        """
         if self.dry_run:
             return StepResult(message=f"Would write {NS_EXCLUSIONS_CONF}")
+
+        carried_admin = admin_ips is None
+        if admin_ips is None:
+            admin_ips = get_allowlisted_ips()
+        if nodeping_ips is None:
+            nodeping_ips = get_nodeping_ips()
+
+        # Guard against a silent wipe: if we are carrying the admin allowlist
+        # forward (caller did not pass one explicitly) but the deployed file
+        # clearly holds more admin rules than we could parse back, the file is
+        # malformed or from an older format. Abort rather than regenerate over
+        # a populated allowlist with zero — an empty admin list must be an
+        # explicit choice, never the result of a parse failure.
+        deployed = read_file(NS_EXCLUSIONS_CONF) or ""
+        deployed_admin_rules = len(re.findall(r'"id:10001\d+', deployed))
+        if carried_admin and deployed_admin_rules > len(admin_ips):
+            return StepResult(
+                success=False,
+                error=(
+                    f"Refusing to regenerate {NS_EXCLUSIONS_CONF}: the deployed file has "
+                    f"{deployed_admin_rules} admin allowlist rule(s) but only "
+                    f"{len(admin_ips)} could be read back. The file may be malformed or "
+                    "in an older format — restore it or re-add the IPs before retrying "
+                    "so the allowlist is not lost."
+                ),
+            )
 
         if file_exists(NS_EXCLUSIONS_CONF):
             backup_file(NS_EXCLUSIONS_CONF)
 
         content = render(
             NS_EXCLUSIONS_TEMPLATE,
-            admin_ips=admin_ips or [],
-            nodeping_ips=nodeping_ips or [],
+            admin_ips=admin_ips,
+            nodeping_ips=nodeping_ips,
             version=NS_EXCLUSIONS_VERSION,
             template_hash=NS_EXCLUSIONS_HASH,
         )

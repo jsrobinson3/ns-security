@@ -803,3 +803,88 @@ class TestReenableCrsRules:
         reenabled = installer._reenable_crs_rules(str(tmp_path))
 
         assert reenabled == []
+
+
+class TestGetNodepingIps:
+    """Tests for get_nodeping_ips (separate ID band from admin IPs)."""
+
+    def test_parses_nodeping_band_only(self, mock_file_ops):
+        from nssec.modules.waf import get_nodeping_ips
+
+        mock_file_ops["read"].return_value = """
+SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
+SecRule REMOTE_ADDR "@ipMatch 5.6.7.8" "id:1000201,phase:1,pass"
+SecRule REMOTE_ADDR "@ipMatch 9.10.11.12" "id:1000202,phase:1,pass"
+"""
+        assert get_nodeping_ips() == ["5.6.7.8", "9.10.11.12"]
+
+    def test_does_not_pick_up_admin_ips(self, mock_file_ops):
+        from nssec.modules.waf import get_nodeping_ips
+
+        mock_file_ops["read"].return_value = (
+            'SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"\n'
+        )
+        assert get_nodeping_ips() == []
+
+
+class TestInstallExclusionsPreservesAllowlist:
+    """Regression: update-exclusions must not drop the admin allowlist.
+
+    The deployed conf is the only store for allowlisted IPs, so a caller that
+    passes only nodeping_ips must carry the admin IPs forward, and vice versa.
+    """
+
+    DEPLOYED = (
+        'SecRule REMOTE_ADDR "@ipMatch 216.59.61.192/26" "id:1000101,phase:1,pass"\n'
+        'SecRule REMOTE_ADDR "@ipMatch 203.0.113.7" "id:1000102,phase:1,pass"\n'
+        'SecRule REMOTE_ADDR "@ipMatch 5.6.7.8" "id:1000201,phase:1,pass"\n'
+    )
+
+    def test_update_exclusions_keeps_admin_allowlist(self, mock_file_ops):
+        from nssec.modules.waf import ModSecurityInstaller
+
+        mock_file_ops["read"].return_value = self.DEPLOYED
+        result = ModSecurityInstaller().install_exclusions(nodeping_ips=["9.9.9.9"])
+
+        assert result.success
+        kwargs = mock_file_ops["render"].call_args.kwargs
+        assert kwargs["admin_ips"] == ["216.59.61.192/26", "203.0.113.7"]
+        assert kwargs["nodeping_ips"] == ["9.9.9.9"]
+
+    def test_allowlist_render_keeps_nodeping(self, mock_file_ops):
+        """add/remove paths that know only admin IPs must keep nodeping IPs."""
+        from nssec.modules.waf import add_allowlisted_ip
+
+        mock_file_ops["read"].return_value = self.DEPLOYED
+        result = add_allowlisted_ip("198.51.100.4")
+
+        assert result.success
+        assert mock_file_ops["render"].call_args.kwargs["nodeping_ips"] == ["5.6.7.8"]
+
+    def test_explicit_empty_admin_is_allowed(self, mock_file_ops):
+        """Passing admin_ips=[] is a deliberate clear, not a parse failure."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        mock_file_ops["read"].return_value = self.DEPLOYED
+        result = ModSecurityInstaller().install_exclusions(admin_ips=[], nodeping_ips=[])
+
+        assert result.success
+        assert mock_file_ops["render"].call_args.kwargs["admin_ips"] == []
+
+
+class TestInstallExclusionsWipeGuard:
+    """A malformed deployed file must abort, never silently regenerate to zero."""
+
+    # Admin rule id is present, but the @ipMatch shape the parser needs is not,
+    # so carry-forward reads back zero while the file clearly holds a rule.
+    MALFORMED = 'SecRule ARGS "@rx x" "id:1000101,phase:1,pass"\n'
+
+    def test_aborts_instead_of_wiping(self, mock_file_ops):
+        from nssec.modules.waf import ModSecurityInstaller
+
+        mock_file_ops["read"].return_value = self.MALFORMED
+        result = ModSecurityInstaller().install_exclusions(nodeping_ips=["9.9.9.9"])
+
+        assert not result.success
+        assert "allowlist" in result.error
+        mock_file_ops["write"].assert_not_called()
