@@ -437,6 +437,21 @@ SecRuleUpdateTargetById RULE_ID "!ARGS:parameter_name"
 SecRuleRemoveById RULE_ID
 ```
 
+**Redact a secret from the audit log (does not affect detection):**
+```apache
+SecAction "id:1000013,phase:2,t:none,nolog,pass,sanitiseArg:password,sanitiseArg:client_secret"
+```
+`sanitiseArg` masks the value of the named argument (every byte becomes `*`) wherever
+ModSecurity writes the request to its **audit log**. It matches by argument name, so it
+covers every endpoint that uses that name. The rule at id `1000013` in the exclusions
+file already masks `password`, `client_secret`, `refresh_token`, `access_token`,
+`auth_code`, `nsToken`, and `ns_t`.
+
+> **Note:** this only touches the ModSecurity audit log. The Apache `access_log` records
+> the full request line (`%r`) via `mod_log_config` and will still contain query-string
+> secrets (e.g. GET OAuth2 password grants) in cleartext. Redact those separately in the
+> vhost with a `LogFormat` that omits `%q` for the token endpoint, or a `SetEnvIf` rule.
+
 ### Resources for CRS tuning
 
 - [OWASP CRS Documentation](https://coreruleset.org/docs/)

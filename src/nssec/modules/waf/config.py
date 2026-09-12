@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "7"
+NS_EXCLUSIONS_VERSION = "8"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -215,10 +215,42 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # These rules prevent false positives on the NetSapiens management UI
 # and API endpoints while keeping CRS protection active for everything else.
 #
-# All exclusions are runtime ctl directives, which only suppress rules that
-# execute later in the same transaction. This file must therefore be loaded
-# BEFORE the CRS rules — otherwise the phase-1 exclusions (localhost and IP
-# allowlists) run after phase-1 CRS rules have already fired.
+# Almost all exclusions are runtime ctl directives, which only suppress rules
+# that execute later in the same transaction. This file must therefore be
+# loaded BEFORE the CRS rules — otherwise the phase-1 exclusions (localhost and
+# IP allowlists) run after phase-1 CRS rules have already fired. The one
+# exception is the sanitiseArg rule (1000013): it is a logging-time action, not
+# a rule suppression, so its load order relative to the CRS rules is immaterial.
+
+# ---- Redact credential-bearing arguments from the audit log ----
+# ModSecurity writes matched requests to the audit log verbatim, including
+# query-string and body arguments. OAuth2 password-grant and portal-token
+# requests carry secrets in named arguments; sanitiseArg replaces every byte of
+# the named argument's value with an asterisk in the audit log (parts A/B/C/I).
+# Masking is by argument NAME, so `password` is caught on every endpoint that
+# uses it, not just the token endpoint. This is non-disruptive and never blocks.
+#
+# Scope note: this only covers the ModSecurity audit log. The Apache access_log
+# records the request line (%r) independently and still stores query-string
+# secrets in cleartext — that needs a separate LogFormat/SetEnvIf fix in the
+# vhost, outside nssec's control.
+#
+# `ctl:sanitiseArg` does not exist in ModSecurity 2.x (not in the ctl option
+# list), so this is an unconditional SecAction. phase:2 matches the documented
+# pattern in the reference manual and guarantees arguments are fully parsed.
+SecAction \\
+    "id:1000013,\\
+     phase:2,\\
+     t:none,\\
+     nolog,\\
+     pass,\\
+     sanitiseArg:password,\\
+     sanitiseArg:client_secret,\\
+     sanitiseArg:refresh_token,\\
+     sanitiseArg:access_token,\\
+     sanitiseArg:auth_code,\\
+     sanitiseArg:nsToken,\\
+     sanitiseArg:ns_t"
 
 # ---- Admin UI form submissions and third-party tracking cookies ----
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
