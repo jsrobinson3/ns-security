@@ -608,12 +608,18 @@ def waf_allowlist_add(ip, yes):
     IP can be a single address (192.168.1.1) or CIDR notation (10.0.0.0/8).
     Allowlisted IPs bypass OWASP CRS rules for reduced false positives.
     """
-    from nssec.modules.waf import ModSecurityInstaller, add_allowlisted_ip, get_allowlisted_ips
+    from nssec.modules.waf import (
+        ModSecurityInstaller,
+        add_allowlisted_ip,
+        get_allowlisted_ips,
+        normalize_ipmatch_entry,
+    )
 
     installer = ModSecurityInstaller()
     pf = installer.preflight()
     _require_root_and_modsec(pf, "sudo nssec waf allowlist add")
 
+    ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip in current_ips:
         console.print(f"[yellow]IP {ip} is already allowlisted.[/yellow]")
@@ -644,12 +650,18 @@ def waf_allowlist_delete(ip, yes):
 
     IP must match exactly as it was added (including CIDR notation if used).
     """
-    from nssec.modules.waf import ModSecurityInstaller, get_allowlisted_ips, remove_allowlisted_ip
+    from nssec.modules.waf import (
+        ModSecurityInstaller,
+        get_allowlisted_ips,
+        normalize_ipmatch_entry,
+        remove_allowlisted_ip,
+    )
 
     installer = ModSecurityInstaller()
     pf = installer.preflight()
     _require_root_and_modsec(pf, "sudo nssec waf allowlist delete")
 
+    ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip not in current_ips:
         console.print(f"[yellow]IP {ip} is not in the allowlist.[/yellow]")
