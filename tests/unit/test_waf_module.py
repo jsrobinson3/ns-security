@@ -657,7 +657,7 @@ class TestOAuth2TokenExclusion:
     def test_scopes_rule_to_token_endpoint(self):
         """Exclusion should target the OAuth2 token endpoint only."""
         rendered = self._render()
-        assert '@beginsWith /ns-api/oauth2/token' in rendered
+        assert "@beginsWith /ns-api/oauth2/token" in rendered
         assert "id:1000012" in rendered
 
     def test_removes_only_920180(self):
@@ -672,7 +672,7 @@ class TestOAuth2TokenExclusion:
 
 
 class TestSanitiseArgExclusion:
-    """Tests for the audit-log credential redaction rule (id:1000013)."""
+    """Tests for the audit-log credential redaction rule (id:1000015)."""
 
     def _render(self):
         from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
@@ -686,13 +686,13 @@ class TestSanitiseArgExclusion:
     def _block(self, rendered):
         # The action list only: from after the id up to the closing quote of
         # the SecAction directive.
-        return rendered.split("id:1000013")[1].split('"')[0]
+        return rendered.split("id:1000015")[1].split('"')[0]
 
     def test_rule_present_as_unconditional_secaction(self):
         rendered = self._render()
-        assert "id:1000013" in rendered
+        assert "id:1000015" in rendered
         # Unconditional SecAction, not a SecRule gated on a condition.
-        preamble = rendered.split("id:1000013")[0]
+        preamble = rendered.split("id:1000015")[0]
         assert preamble.rstrip().endswith('SecAction \\\n    "')
 
     def test_masks_every_requested_argument_name(self):
@@ -729,6 +729,77 @@ class TestSanitiseArgExclusion:
         _, _, admin_ips, nodeping_ips = _parse_exclusions_meta(self._render())
         assert admin_ips == 0
         assert nodeping_ips == 0
+
+
+class TestLegacyMobileFalsePositiveExclusions:
+    """Tests for the 942220 / 933150 exclusions covering legacy mobile clients."""
+
+    def _render(self):
+        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+
+        return Template(NS_EXCLUSIONS_TEMPLATE).render(
+            timestamp="test",
+            admin_ips=[],
+            nodeping_ips=[],
+        )
+
+    def _block(self, rendered, rule_id):
+        """Return the directive body for a single exclusion rule."""
+        return rendered.split(f"id:{rule_id}")[1].split("SecRule")[0]
+
+    def test_pagination_limit_scoped_to_args_limit(self):
+        """942220 should be dropped only for ARGS:limit, only under /ns-api/."""
+        rendered = self._render()
+        assert "id:1000013" in rendered
+        block = self._block(rendered, "1000013")
+        assert "ctl:ruleRemoveTargetById=942220;ARGS:limit" in block
+        # Scoped to the API prefix, not global.
+        preamble = rendered.split("id:1000013")[0].rsplit("SecRule", 1)[1]
+        assert "@beginsWith /ns-api/" in preamble
+
+    def test_pagination_limit_does_not_remove_whole_rule(self):
+        """942220 must stay active for every other argument."""
+        rendered = self._render()
+        block = self._block(rendered, "1000013")
+        assert "ruleRemoveById=942220" not in block
+        assert "ruleRemoveByTag" not in block
+
+    def test_config_key_scoped_to_request_filename(self):
+        """933150 should be dropped only for REQUEST_FILENAME on config reads."""
+        rendered = self._render()
+        assert "id:1000014" in rendered
+        block = self._block(rendered, "1000014")
+        assert "ctl:ruleRemoveTargetById=933150;REQUEST_FILENAME" in block
+        preamble = rendered.split("id:1000014")[0].rsplit("SecRule", 1)[1]
+        assert "@beginsWith /ns-api/v2/configurations/" in preamble
+
+    def test_config_key_does_not_remove_whole_rule(self):
+        """933150 must still scan args and bodies under the config namespace."""
+        rendered = self._render()
+        block = self._block(rendered, "1000014")
+        assert "ruleRemoveById=933150" not in block
+        assert "ruleRemoveByTag" not in block
+
+    def test_exclusions_run_in_phase_1(self):
+        """ctl exclusions must run before the phase:2 rules they disarm.
+
+        Both 942220 and 933150 are phase:2 rules.  Registering the ctl in
+        phase:1 guarantees it takes effect before they run, independently of
+        whether this file is included before or after the CRS rules — within
+        a single phase, execution order is load order, so a phase:2 ctl only
+        works while the exclusions happen to load first.
+        """
+        rendered = self._render()
+        for rule_id in ("1000013", "1000014"):
+            assert "phase:1" in self._block(rendered, rule_id)
+
+    def test_exclusion_rule_ids_are_unique(self):
+        """Every managed exclusion must have a distinct rule ID."""
+        import re
+
+        rendered = self._render()
+        ids = re.findall(r"id:(\d{7})", rendered)
+        assert len(ids) == len(set(ids)), f"duplicate exclusion IDs: {ids}"
 
 
 class TestInstallCrsV4UpdatesSetup:
@@ -937,3 +1008,88 @@ class TestReenableCrsRules:
         reenabled = installer._reenable_crs_rules(str(tmp_path))
 
         assert reenabled == []
+
+
+class TestGetNodepingIps:
+    """Tests for get_nodeping_ips (separate ID band from admin IPs)."""
+
+    def test_parses_nodeping_band_only(self, mock_file_ops):
+        from nssec.modules.waf import get_nodeping_ips
+
+        mock_file_ops["read"].return_value = """
+SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
+SecRule REMOTE_ADDR "@ipMatch 5.6.7.8" "id:1000201,phase:1,pass"
+SecRule REMOTE_ADDR "@ipMatch 9.10.11.12" "id:1000202,phase:1,pass"
+"""
+        assert get_nodeping_ips() == ["5.6.7.8", "9.10.11.12"]
+
+    def test_does_not_pick_up_admin_ips(self, mock_file_ops):
+        from nssec.modules.waf import get_nodeping_ips
+
+        mock_file_ops["read"].return_value = (
+            'SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"\n'
+        )
+        assert get_nodeping_ips() == []
+
+
+class TestInstallExclusionsPreservesAllowlist:
+    """Regression: update-exclusions must not drop the admin allowlist.
+
+    The deployed conf is the only store for allowlisted IPs, so a caller that
+    passes only nodeping_ips must carry the admin IPs forward, and vice versa.
+    """
+
+    DEPLOYED = (
+        'SecRule REMOTE_ADDR "@ipMatch 216.59.61.192/26" "id:1000101,phase:1,pass"\n'
+        'SecRule REMOTE_ADDR "@ipMatch 203.0.113.7" "id:1000102,phase:1,pass"\n'
+        'SecRule REMOTE_ADDR "@ipMatch 5.6.7.8" "id:1000201,phase:1,pass"\n'
+    )
+
+    def test_update_exclusions_keeps_admin_allowlist(self, mock_file_ops):
+        from nssec.modules.waf import ModSecurityInstaller
+
+        mock_file_ops["read"].return_value = self.DEPLOYED
+        result = ModSecurityInstaller().install_exclusions(nodeping_ips=["9.9.9.9"])
+
+        assert result.success
+        kwargs = mock_file_ops["render"].call_args.kwargs
+        assert kwargs["admin_ips"] == ["216.59.61.192/26", "203.0.113.7"]
+        assert kwargs["nodeping_ips"] == ["9.9.9.9"]
+
+    def test_allowlist_render_keeps_nodeping(self, mock_file_ops):
+        """add/remove paths that know only admin IPs must keep nodeping IPs."""
+        from nssec.modules.waf import add_allowlisted_ip
+
+        mock_file_ops["read"].return_value = self.DEPLOYED
+        result = add_allowlisted_ip("198.51.100.4")
+
+        assert result.success
+        assert mock_file_ops["render"].call_args.kwargs["nodeping_ips"] == ["5.6.7.8"]
+
+    def test_explicit_empty_admin_is_allowed(self, mock_file_ops):
+        """Passing admin_ips=[] is a deliberate clear, not a parse failure."""
+        from nssec.modules.waf import ModSecurityInstaller
+
+        mock_file_ops["read"].return_value = self.DEPLOYED
+        result = ModSecurityInstaller().install_exclusions(admin_ips=[], nodeping_ips=[])
+
+        assert result.success
+        assert mock_file_ops["render"].call_args.kwargs["admin_ips"] == []
+
+
+class TestInstallExclusionsWipeGuard:
+    """A malformed deployed file must abort, never silently regenerate to zero."""
+
+    # Admin rule id is present, but the @ipMatch shape the parser needs is not,
+    # so carry-forward reads back zero while the file clearly holds a rule.
+    MALFORMED = 'SecRule ARGS "@rx x" "id:1000101,phase:1,pass"\n'
+
+    def test_aborts_instead_of_wiping(self, mock_file_ops):
+        from nssec.modules.waf import ModSecurityInstaller
+
+        mock_file_ops["read"].return_value = self.MALFORMED
+        result = ModSecurityInstaller().install_exclusions(nodeping_ips=["9.9.9.9"])
+
+        assert not result.success
+        assert "allowlist" in result.error
+        mock_file_ops["write"].assert_not_called()

@@ -439,11 +439,11 @@ SecRuleRemoveById RULE_ID
 
 **Redact a secret from the audit log (does not affect detection):**
 ```apache
-SecAction "id:1000013,phase:2,t:none,nolog,pass,sanitiseArg:password,sanitiseArg:client_secret"
+SecAction "id:1000015,phase:2,t:none,nolog,pass,sanitiseArg:password,sanitiseArg:client_secret"
 ```
 `sanitiseArg` masks the value of the named argument (every byte becomes `*`) wherever
 ModSecurity writes the request to its **audit log**. It matches by argument name, so it
-covers every endpoint that uses that name. The rule at id `1000013` in the exclusions
+covers every endpoint that uses that name. The rule at id `1000015` in the exclusions
 file already masks `password`, `client_secret`, `refresh_token`, `access_token`,
 `auth_code`, `nsToken`, and `ns_t`.
 

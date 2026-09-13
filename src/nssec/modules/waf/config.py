@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "8"
+NS_EXCLUSIONS_VERSION = "9"
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -219,7 +219,7 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # that execute later in the same transaction. This file must therefore be
 # loaded BEFORE the CRS rules — otherwise the phase-1 exclusions (localhost and
 # IP allowlists) run after phase-1 CRS rules have already fired. The one
-# exception is the sanitiseArg rule (1000013): it is a logging-time action, not
+# exception is the sanitiseArg rule (1000015): it is a logging-time action, not
 # a rule suppression, so its load order relative to the CRS rules is immaterial.
 
 # ---- Redact credential-bearing arguments from the audit log ----
@@ -239,7 +239,7 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # list), so this is an unconditional SecAction. phase:2 matches the documented
 # pattern in the reference manual and guarantees arguments are fully parsed.
 SecAction \\
-    "id:1000013,\\
+    "id:1000015,\\
      phase:2,\\
      t:none,\\
      nolog,\\
@@ -382,6 +382,47 @@ SecRule REQUEST_URI "@beginsWith /ns-api/oauth2/token" \\
      pass,\\
      nolog,\\
      ctl:ruleRemoveById=920180"
+
+# ---- Pagination limit sentinel (legacy mobile clients) ----
+# Older mobile clients request "everything" by sending the 32-bit signed
+# integer maximum as the page size, e.g.:
+#   GET /ns-api/?object=call&action=read&limit=2147483647
+# Rule 942220 matches a fixed list of integer-overflow sentinels (2147483647,
+# 4294967295, the 2.2250738585072011e-308 "magic number" crash, ...) against
+# every argument.  In a pagination bound these are a client idiom, not an
+# attack: the value is consumed as an integer row limit, never interpolated
+# into SQL.  At CRITICAL severity it scores 5 anomaly points on its own, which
+# equals the inbound blocking threshold, so every such request 403s.
+#
+# Drop only ARGS:limit from 942220.  The rule still inspects every other
+# argument, and every other SQLi rule (libinjection 942100 included) still
+# inspects ARGS:limit.
+SecRule REQUEST_URI "@beginsWith /ns-api/" \\
+    "id:1000013,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=942220;ARGS:limit"
+
+# ---- Configuration keys named after PHP functions ----
+# The v2 configuration API addresses each setting by key as a path segment:
+#   GET /ns-api/v2/configurations/PORTAL_AGENT_SCREEN_POP_URL_NUMBER_FORMAT
+# Rule 933150 matches high-risk PHP function names against REQUEST_FILENAME,
+# and the key above ends in ...NUMBER_FORMAT, which case-insensitively contains
+# the PHP builtin "number_format".  Any config key whose name happens to embed
+# a function name (number_format, compact, extract, ...) hits this the same
+# way, scoring 5 anomaly points and blocking a plain read of a setting.
+#
+# Drop only REQUEST_FILENAME from 933150, and only under the configurations
+# namespace where keys become path segments.  Request bodies and arguments are
+# still scanned for PHP injection here, and REQUEST_FILENAME is still scanned
+# everywhere else.
+SecRule REQUEST_URI "@beginsWith /ns-api/v2/configurations/" \\
+    "id:1000014,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=933150;REQUEST_FILENAME"
 
 # ---- iNSight health checks ----
 SecRule REQUEST_URI "@beginsWith /cfg/insight_healthcheck" \\
