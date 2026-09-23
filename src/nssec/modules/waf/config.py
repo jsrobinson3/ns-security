@@ -706,8 +706,9 @@ SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$" \\
 # devices are allowed; they still count toward the walk limits.  Bulk means:
 #   v1  object=device&action=read with no real user= or device= value
 #       (empty or wildcard values do not count as scoping the read)
-#   v2  GET /ns-api/v2/domains/{domain}/devices[/count], .../users/*/devices,
-#       or /ns-api/v2/resellers/{reseller}/devices/count
+#   v2  GET /ns-api/v2/domains/{domain}/devices or .../users/*/devices
+# Device counts are never bulk reads (they return numbers only), but like
+# every device read they still count toward the walk limits.
 SecRule TX:nssec_device_read "@eq 1" \\
     "id:1000336,\\
      phase:2,\\
@@ -740,7 +741,7 @@ SecRule TX:nssec_device_read "@eq 1" \\
      nolog,\\
      tag:'nssec-abuse',\\
      chain"
-    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/(?:domains/[^/]+/(?:users/\\*/)?devices(?:/count)?|resellers/[^/]+/devices/count)/?$" \\
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/domains/[^/]+/(?:users/\\*/)?devices/?$" \\
         "t:none,t:urlDecodeUni,t:lowercase,\\
          setvar:tx.nssec_device_bulk=1"
 

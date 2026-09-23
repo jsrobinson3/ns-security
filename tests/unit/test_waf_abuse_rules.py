@@ -291,8 +291,8 @@ class TestDeviceReadAllowlistOnly:
         [
             ("/ns-api/v2/domains/example.com/devices", True),
             ("/ns-api/v2/domains/example.com/devices/", True),
-            ("/ns-api/v2/domains/example.com/devices/count", True),
-            ("/ns-api/v2/resellers/r1/devices/count", True),
+            ("/ns-api/v2/domains/example.com/devices/count", False),
+            ("/ns-api/v2/resellers/r1/devices/count", False),
             ("/ns-api/v2/domains/example.com/users/*/devices", True),
             ("/ns-api/v2/domains/example.com/users/1000/devices", False),
             ("/ns-api/v2/domains/example.com/users/1000/devices/count", False),
