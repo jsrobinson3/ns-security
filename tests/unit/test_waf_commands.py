@@ -208,6 +208,19 @@ class TestWafAllowlistDelete:
             assert result.exit_code == 0
             assert "not in the allowlist" in result.output
 
+    def test_cluster_peer_points_to_cluster_refresh(self, runner, mock_installer):
+        """A cluster peer is not a manual entry; say where it is managed."""
+        peers = {"192.0.2.11": "core1.example.com"}
+        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=[]), patch(
+            "nssec.modules.waf.cluster.deployed_exclusions_peers", return_value=peers
+        ), patch("nssec.modules.waf.remove_allowlisted_ip") as mock_remove:
+            result = runner.invoke(waf, ["allowlist", "delete", "192.0.2.11", "-y"])
+
+        assert result.exit_code == 0
+        assert "cluster peer" in result.output
+        assert "--exclude-host" in result.output
+        mock_remove.assert_not_called()
+
     def test_requires_root(self, runner, mock_installer):
         """Should fail if not root."""
         mock_installer.preflight.return_value.is_root = False
@@ -219,6 +232,13 @@ class TestWafAllowlistDelete:
 
 class TestWafAllowlistShow:
     """Tests for waf allowlist show command."""
+
+    @pytest.fixture(autouse=True)
+    def no_deployed_file(self):
+        with patch("nssec.modules.waf.get_nodeping_ips", return_value=[]), patch(
+            "nssec.modules.waf.cluster.deployed_exclusions_peers", return_value={}
+        ):
+            yield
 
     def test_shows_allowlisted_ips(self, runner):
         """Should display allowlisted IPs."""
@@ -238,6 +258,20 @@ class TestWafAllowlistShow:
 
             assert result.exit_code == 0
             assert "No IPs" in result.output
+
+    def test_shows_cluster_peers_and_nodeping(self, runner):
+        peers = {"192.0.2.11": "core1.example.com", "2001:db8::11": "core1.example.com"}
+        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=[]), patch(
+            "nssec.modules.waf.cluster.deployed_exclusions_peers", return_value=peers
+        ), patch("nssec.modules.waf.get_nodeping_ips", return_value=["203.0.113.8"]):
+            result = runner.invoke(waf, ["allowlist", "show"])
+
+        assert result.exit_code == 0
+        assert "Cluster peers (2)" in result.output
+        assert "192.0.2.11" in result.output
+        assert "2001:db8::11" in result.output
+        assert "core1.example.com" in result.output
+        assert "NodePing probes (1)" in result.output
 
     def test_default_subcommand_shows_list(self, runner):
         """Running 'waf allowlist' without subcommand should show list."""

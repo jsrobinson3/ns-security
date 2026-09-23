@@ -105,6 +105,125 @@ def _print_init_next_steps(mode):
         console.print("  4. When ready to block: [cyan]nssec waf enable[/cyan]")
 
 
+def _exclusion_toggle_options(fn):
+    """Add the --[no-]<toggle> options for the optional exclusion rules."""
+    options = [
+        click.option(
+            "--device-walk/--no-device-walk",
+            default=None,
+            help="Per-IP limits on v1/v2 API device reads across domains (default on).",
+        ),
+        click.option(
+            "--device-read-allowlist-only/--no-device-read-allowlist-only",
+            default=None,
+            help=(
+                "Deny domain-wide device list reads (v1/v2 API) that are not from "
+                "localhost, an allowlisted admin IP, NodePing or a cluster peer; "
+                "single-device reads are allowed (default off)."
+            ),
+        ),
+        click.option(
+            "--block-harvest-ua/--no-block-harvest-ua",
+            default=None,
+            help="Deny harvesting user agents and ban their IP from ns-api (default on).",
+        ),
+        click.option(
+            "--token-audit/--no-token-audit",
+            default=None,
+            help=(
+                "Verbose mode: write every /ns-api/oauth2/token and /ns-api/v2/tokens "
+                "request to the audit log, credential values masked "
+                "(default off)."
+            ),
+        ),
+    ]
+    for option in reversed(options):
+        fn = option(fn)
+    return fn
+
+
+def _cluster_options(fn):
+    """Add the cluster-peer discovery options (SBUS manifest)."""
+    options = [
+        click.option(
+            "--no-cluster",
+            is_flag=True,
+            help="Skip SBUS cluster discovery; reuse the cached peers, if any.",
+        ),
+        click.option(
+            "--no-public-ip-lookup",
+            is_flag=True,
+            help="Do not add this server's public IP (from api.ipify.org) to the peers.",
+        ),
+        click.option(
+            "--exclude-host",
+            "exclude_hosts",
+            multiple=True,
+            metavar="PATTERN",
+            help="Leave manifest hosts matching this glob out of the peers (repeatable).",
+        ),
+    ]
+    for option in reversed(options):
+        fn = option(fn)
+    return fn
+
+
+def _resolve_cluster(no_cluster=False, no_public_ip_lookup=False, exclude_hosts=(), save=True):
+    """Discover cluster peers (cache fallback) and report what will be used."""
+    from nssec.modules.waf.cluster import SOURCE_DISCOVERED, resolve_cluster_peers
+
+    cluster = resolve_cluster_peers(
+        discover=not no_cluster,
+        lookup_public=not no_public_ip_lookup,
+        exclude=exclude_hosts,
+        save=save,
+    )
+    if cluster.source == SOURCE_DISCOVERED:
+        console.print(
+            f"  Discovered {len(cluster.peers)} cluster peer IP(s) from "
+            f"{len(cluster.hosts)} SBUS manifest host(s)"
+        )
+    for warning in cluster.warnings:
+        console.print(f"  [yellow]Warning:[/yellow] {warning}")
+    if cluster.ipv6:
+        console.print(
+            f"  [dim]Note:[/dim] {len(cluster.ipv6)} IPv6 peer address(es) left out of "
+            "mod_evasive (DOSWhitelist is IPv4-only); ModSecurity and the admin-UI "
+            "restrictions include them"
+        )
+    return cluster
+
+
+def _print_step(result):
+    if not result.success:
+        console.print(f"  [red]Error:[/red] {result.error}")
+    elif result.skipped:
+        console.print(f"  [dim]Skipped:[/dim] {result.message}")
+    else:
+        console.print(f"  [green]Done:[/green] {result.message}")
+
+
+def _toggle_overrides(toggle_flags):
+    """Keep only the toggles given on the command line; warn about risky ones."""
+    toggles = {name: value for name, value in toggle_flags.items() if value is not None}
+    if toggles.get("device_read_allowlist_only"):
+        console.print(
+            "  [yellow]Warning:[/yellow] device-read allowlist-only denies domain-wide "
+            "device list reads from every source not allowlisted — integrations that "
+            "list a domain's devices from their own IPs will get 403"
+        )
+    if toggles.get("token_audit"):
+        console.print(
+            "  [yellow]Note:[/yellow] token audit writes every token request to the "
+            "audit log; credential values are masked, usernames and other fields are not"
+        )
+    return toggles
+
+
+def _on_off(val):
+    return "[green]on[/green]" if val else "[yellow]off[/yellow]"
+
+
 def _yn(val, false_color="red"):
     """Format a boolean as a colored yes/no string."""
     return "[green]yes[/green]" if val else f"[{false_color}]no[/{false_color}]"
@@ -200,9 +319,40 @@ def _build_status_table(status):
             table.add_row("  Admin IPs", str(status.exclusions_admin_ips))
         if status.exclusions_nodeping_ips:
             table.add_row("  NodePing IPs", str(status.exclusions_nodeping_ips))
+        toggles = status.exclusions_toggles
+        table.add_row("  Device-walk limits", _on_off(toggles.get("device_walk")))
+        table.add_row(
+            "  Device reads allowlist-only",
+            "[yellow]on[/yellow]" if toggles.get("device_read_allowlist_only") else "off",
+        )
+        table.add_row("  Harvest UA block", _on_off(toggles.get("block_harvest_ua")))
+        token_audit = "[yellow]on (every token request logged)[/yellow]"
+        table.add_row("  Token audit", token_audit if toggles.get("token_audit") else "off")
     else:
         table.add_row("NS exclusions", "[yellow]not deployed[/yellow]")
 
+    if status.cluster_peer_count:
+        from nssec.modules.waf.cluster import format_age
+
+        v6 = f", {status.cluster_ipv6_count} IPv6" if status.cluster_ipv6_count else ""
+        table.add_row(
+            "Cluster peers",
+            f"{status.cluster_peer_count} IPs{v6} from {status.cluster_manifest_url} "
+            f"(discovered {format_age(status.cluster_discovered_at)} ago)",
+        )
+        table.add_row("  In mod_evasive", str(status.cluster_evasive_count))
+        if status.cluster_drift:
+            table.add_row(
+                "  [yellow]Drift[/yellow]",
+                "[yellow]no mod_evasive entry for "
+                + ", ".join(status.cluster_drift)
+                + "[/yellow] — run [cyan]nssec waf cluster refresh[/cyan]",
+            )
+    else:
+        table.add_row(
+            "Cluster peers",
+            "[yellow]none cached[/yellow] — run [cyan]nssec waf cluster refresh[/cyan]",
+        )
     table.add_row("Audit log", _yn(status.audit_log_exists, "dim"))
     return table
 
@@ -225,7 +375,18 @@ def _build_status_table(status):
     is_flag=True,
     help="Show what would be done without making changes",
 )
-def waf_init(mode, skip_evasive, yes, dry_run):
+@_exclusion_toggle_options
+@_cluster_options
+def waf_init(
+    mode,
+    skip_evasive,
+    yes,
+    dry_run,
+    no_cluster,
+    no_public_ip_lookup,
+    exclude_hosts,
+    **toggle_flags,
+):
     """Install and configure ModSecurity v2 with OWASP CRS v4."""
     from nssec.modules.waf import ModSecurityInstaller
 
@@ -266,8 +427,18 @@ def waf_init(mode, skip_evasive, yes, dry_run):
     elif nodeping_ips:
         console.print(f"  Fetched {len(nodeping_ips)} NodePing probe IPs for WAF allowlisting")
 
+    cluster = _resolve_cluster(no_cluster, no_public_ip_lookup, exclude_hosts)
+
+    from nssec.modules.waf.restrict import rerender_with_cluster
+
+    if cluster.peers:
+        restrict = rerender_with_cluster(cluster)
+        if not restrict.skipped:
+            _print_step(restrict)
+
     console.print()
-    result = installer.run(nodeping_ips=nodeping_ips)
+    toggles = _toggle_overrides(toggle_flags)
+    result = installer.run(nodeping_ips=nodeping_ips, toggles=toggles, cluster=cluster)
     _print_install_results(result)
 
     if not result.success:
@@ -403,7 +574,11 @@ def waf_remove(yes):
     is_flag=True,
     help="Show what would be done without making changes",
 )
-def waf_update_exclusions(yes, dry_run):
+@_exclusion_toggle_options
+@_cluster_options
+def waf_update_exclusions(
+    yes, dry_run, no_cluster, no_public_ip_lookup, exclude_hosts, **toggle_flags
+):
     """Re-deploy NetSapiens WAF exclusion rules.
 
     Updates /etc/modsecurity/netsapiens-exclusions.conf from the latest
@@ -411,6 +586,10 @@ def waf_update_exclusions(yes, dry_run):
     the security2.conf include layout so the exclusions load before the
     CRS rules (required for the localhost/IP allowlist exclusions to
     suppress phase-1 rules).
+
+    \b
+    The optional rules (--device-walk, --block-harvest-ua, --token-audit,
+    each with a --no- form) keep their current setting unless given.
     """
     from nssec.modules.waf import ModSecurityInstaller
 
@@ -429,11 +608,37 @@ def waf_update_exclusions(yes, dry_run):
     elif nodeping_ips:
         console.print(f"  Fetched {len(nodeping_ips)} NodePing probe IPs for WAF allowlisting")
 
-    result = installer.install_exclusions(nodeping_ips=nodeping_ips)
+    cluster = _resolve_cluster(no_cluster, no_public_ip_lookup, exclude_hosts, save=not dry_run)
+
+    from nssec.modules.waf import restrict as restrict_mod
+    from nssec.modules.waf.config import EVASIVE_CONF, NS_EXCLUSIONS_CONF
+    from nssec.modules.waf.utils import restore_snapshot, snapshot_files
+
+    # Snapshot everything this command rewrites so a failed configtest undoes
+    # exactly this run.
+    snapshot = snapshot_files([NS_EXCLUSIONS_CONF, EVASIVE_CONF, restrict_mod.RESTRICT_CONF_PATH])
+
+    toggles = _toggle_overrides(toggle_flags)
+    result = installer.install_exclusions(
+        nodeping_ips=nodeping_ips, toggles=toggles, cluster=cluster
+    )
     if not result.success:
         console.print(f"  [red]Error:[/red] {result.error}")
         raise SystemExit(1)
     console.print(f"  [green]Done:[/green] {result.message}")
+
+    # Keep the cluster peers identical in every config that lists them.
+    evasive = installer.refresh_evasive_cluster(cluster)
+    _print_step(evasive)
+    if not evasive.success:
+        restore_snapshot(snapshot)
+        raise SystemExit(1)
+    if not dry_run:
+        restrict = restrict_mod.rerender_with_cluster(cluster)
+        _print_step(restrict)
+        if not restrict.success:
+            restore_snapshot(snapshot)
+            raise SystemExit(1)
 
     # Rewrite security2.conf so the exclusions load before the CRS rules
     # (no-op on wildcard-include setups, where they already do).
@@ -450,7 +655,7 @@ def waf_update_exclusions(yes, dry_run):
         console.print("\n[yellow]Dry run \u2014 no further changes.[/yellow]")
         return
 
-    val = installer.validate_config()
+    val = installer.validate_config(snapshot=snapshot)
     if not val.success:
         console.print(f"  [red]Error:[/red] {val.error}")
         raise SystemExit(1)
@@ -586,17 +791,37 @@ def waf_allowlist(ctx):
 
 @waf_allowlist.command("show")
 def waf_allowlist_show():
-    """Show current allowlisted IPs."""
-    from nssec.modules.waf import get_allowlisted_ips
+    """Show every IP with reduced WAF strictness: admin, cluster peers, NodePing."""
+    from nssec.modules.waf import get_allowlisted_ips, get_nodeping_ips
+    from nssec.modules.waf.cluster import deployed_exclusions_peers
 
     ips = get_allowlisted_ips()
-    if not ips:
+    if ips:
+        console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})")
+        for ip in ips:
+            console.print(f"  {ip}")
+    else:
         console.print("[dim]No IPs currently allowlisted.[/dim]")
-        return
+    console.print("  [dim]Manage with: nssec waf allowlist add|delete[/dim]")
 
-    console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})\n")
-    for ip in ips:
-        console.print(f"  {ip}")
+    peers = deployed_exclusions_peers()
+    console.print()
+    if peers:
+        console.print(f"[bold]Cluster peers[/bold] ({len(peers)})")
+        width = max(len(ip) for ip in peers)
+        for ip, host in peers.items():
+            console.print(f"  {ip.ljust(width)}  [dim]{host}[/dim]")
+    else:
+        console.print("[dim]No cluster peers deployed.[/dim]")
+    console.print("  [dim]Managed from the SBUS manifest: nssec waf cluster show|refresh[/dim]")
+
+    nodeping = get_nodeping_ips()
+    console.print()
+    console.print(f"[bold]NodePing probes[/bold] ({len(nodeping)})")
+    console.print("  [dim]Refreshed by: nssec waf update-exclusions[/dim]")
+
+    console.print()
+    console.print("[dim]Localhost (127.0.0.1, ::1) is always allowlisted.[/dim]")
 
 
 @waf_allowlist.command("add")
@@ -664,6 +889,19 @@ def waf_allowlist_delete(ip, yes):
     ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip not in current_ips:
+        from nssec.modules.waf.cluster import deployed_exclusions_peers
+
+        peers = deployed_exclusions_peers()
+        if ip in peers:
+            console.print(
+                f"[yellow]{ip} is a cluster peer ({peers[ip]}), not a manual allowlist "
+                "entry.[/yellow]"
+            )
+            console.print(
+                "Cluster peers come from the SBUS manifest; to leave a host out run "
+                "[cyan]nssec waf cluster refresh --exclude-host PATTERN[/cyan]."
+            )
+            return
         console.print(f"[yellow]IP {ip} is not in the allowlist.[/yellow]")
         if current_ips:
             console.print("\nCurrent allowlisted IPs:")
@@ -1246,3 +1484,201 @@ def waf_restrict_reapply(dry_run, yes):
 
     if any_changed:
         _validate_and_prompt_reload_for_restrict(yes)
+
+
+# ---------------------------------------------------------------------------
+# Cluster peers (SBUS manifest)
+# ---------------------------------------------------------------------------
+
+
+@waf.group("cluster", invoke_without_command=True)
+@click.pass_context
+def waf_cluster(ctx):
+    """Allowlist this server's SBUS cluster peers.
+
+    \b
+    Cluster members deliver SBUS events to each other over HTTP, often from
+    public IPs. Without an allowlist, mod_evasive can mistake a burst of
+    events for a flood; SBUS retries the denied deliveries, so the block
+    keeps itself going. Peers come from the SBusClusterManifest in sbus.ini
+    and are written to mod_evasive, the ModSecurity exclusions and the
+    admin-UI restrictions.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(waf_cluster_show)
+
+
+def _print_peer_table(title, peers, evasive_listed=None):
+    from nssec.core.cluster import is_ipv4
+
+    table = Table(title=title, show_header=True)
+    table.add_column("IP")
+    table.add_column("Host")
+    if evasive_listed is not None:
+        table.add_column("mod_evasive")
+    for ip, host in peers.items():
+        row = [ip, host]
+        if evasive_listed is not None:
+            if not is_ipv4(ip):
+                row.append("[dim]n/a (IPv6)[/dim]")
+            else:
+                row.append(_yn(ip in evasive_listed))
+        table.add_row(*row)
+    console.print(table)
+
+
+@waf_cluster.command("show")
+def waf_cluster_show():
+    """Show the cached cluster peers and what each config allowlists."""
+    from nssec.modules.waf.cluster import (
+        cached_cluster_peers,
+        deployed_evasive_peers,
+        deployed_exclusions_peers,
+        evasive_drift,
+        format_age,
+    )
+    from nssec.modules.waf.config import EVASIVE_CONF
+    from nssec.modules.waf.utils import read_file
+
+    cluster = cached_cluster_peers()
+    if not cluster.peers:
+        console.print("[yellow]No cluster peers cached.[/yellow]")
+        console.print(f"Run [cyan]{sudo_hint('waf cluster refresh')}[/cyan] to discover them.")
+        return
+
+    console.print(f"[bold]Manifest:[/bold]   {cluster.manifest_url}")
+    age = format_age(cluster.discovered_at)
+    console.print(f"[bold]Discovered:[/bold] {cluster.discovered_at} ({age} ago)")
+    console.print(f"[bold]Hosts:[/bold]      {', '.join(cluster.hosts)}")
+    console.print()
+    evasive_content = read_file(EVASIVE_CONF) or ""
+    _print_peer_table(
+        f"Cluster peers ({len(cluster.peers)})",
+        cluster.peers,
+        evasive_listed=deployed_evasive_peers(evasive_content),
+    )
+    console.print(f"ModSecurity exclusions allowlist {len(deployed_exclusions_peers())} of them.")
+    drift = evasive_drift(cluster, evasive_content)
+    if drift:
+        console.print(
+            f"[yellow]Warning:[/yellow] no mod_evasive entry for: {', '.join(drift)} "
+            f"— run [cyan]{sudo_hint('waf cluster refresh')}[/cyan]"
+        )
+
+
+@waf_cluster.command("refresh")
+@click.option("--dry-run", is_flag=True, help="Show the peer changes without writing anything")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+@click.option(
+    "--no-public-ip-lookup",
+    is_flag=True,
+    help="Do not add this server's public IP (from api.ipify.org) to the peers.",
+)
+@click.option(
+    "--exclude-host",
+    "exclude_hosts",
+    multiple=True,
+    metavar="PATTERN",
+    help="Leave manifest hosts matching this glob out of the peers (repeatable).",
+)
+def waf_cluster_refresh(dry_run, yes, no_public_ip_lookup, exclude_hosts):
+    """Re-discover cluster peers and rewrite every config that lists them.
+
+    \b
+    Shows the added/removed peers, rewrites mod_evasive, the ModSecurity
+    exclusions and the admin-UI restrictions (whichever are deployed), runs
+    apachectl configtest, and reloads Apache gracefully. A failed configtest
+    puts all three files back exactly as they were.
+    """
+    from nssec.core.ssh import is_root
+    from nssec.modules.waf import ModSecurityInstaller
+    from nssec.modules.waf import restrict as restrict_mod
+    from nssec.modules.waf.cluster import (
+        SOURCE_DISCOVERED,
+        deployed_evasive_peers,
+        deployed_peers,
+        diff_peers,
+        resolve_cluster_peers,
+    )
+    from nssec.modules.waf.config import EVASIVE_CONF, NS_EXCLUSIONS_CONF
+    from nssec.modules.waf.utils import file_exists, restore_snapshot, snapshot_files
+
+    if not dry_run and not is_root():
+        console.print(
+            f"[red]Error:[/red] root required. Run: [cyan]{sudo_hint('waf cluster refresh')}[/cyan]"
+        )
+        raise SystemExit(1)
+
+    console.print("[bold]Discovering SBUS cluster peers...[/bold]")
+    cluster = resolve_cluster_peers(
+        discover=True,
+        lookup_public=not no_public_ip_lookup,
+        exclude=exclude_hosts,
+        save=False,
+    )
+    if cluster.source != SOURCE_DISCOVERED:
+        for warning in cluster.warnings:
+            console.print(f"  [red]Error:[/red] {warning}")
+        console.print("Nothing changed; the deployed configs keep their current peers.")
+        raise SystemExit(1)
+    for warning in cluster.warnings:
+        console.print(f"  [yellow]Warning:[/yellow] {warning}")
+    console.print(
+        f"  {len(cluster.peers)} peer IP(s) from {len(cluster.hosts)} host(s) "
+        f"in {cluster.manifest_url}"
+    )
+
+    current = deployed_peers()
+    added, removed = diff_peers(current, cluster.peers)
+    console.print()
+    for ip in added:
+        console.print(f"  [green]+ {ip}[/green]  {cluster.peers[ip]}")
+    for ip in removed:
+        console.print(f"  [red]- {ip}[/red]  {current[ip]}")
+    evasive_missing = (
+        [ip for ip, _ in cluster.ipv4 if ip not in deployed_evasive_peers()]
+        if file_exists(EVASIVE_CONF)
+        else []
+    )
+    if not added and not removed and not evasive_missing:
+        console.print("  No peer changes.")
+    if cluster.ipv6:
+        console.print(
+            f"  [dim]{len(cluster.ipv6)} IPv6 address(es) go to ModSecurity and the "
+            "restrictions only (DOSWhitelist is IPv4-only)[/dim]"
+        )
+
+    if dry_run:
+        console.print("\n[yellow]Dry run — no changes made.[/yellow]")
+        return
+
+    restrict_path = restrict_mod.RESTRICT_CONF_PATH
+    snapshot = snapshot_files([NS_EXCLUSIONS_CONF, EVASIVE_CONF, restrict_path])
+    installer = ModSecurityInstaller()
+    console.print()
+    steps = []
+    if file_exists(NS_EXCLUSIONS_CONF):
+        steps.append(lambda: installer.install_exclusions(cluster=cluster))
+    steps.append(lambda: installer.refresh_evasive_cluster(cluster))
+    steps.append(lambda: restrict_mod.rerender_with_cluster(cluster))
+    for step in steps:
+        result = step()
+        _print_step(result)
+        if not result.success:
+            restore_snapshot(snapshot)
+            console.print("Restored the previous configs.")
+            raise SystemExit(1)
+
+    val = installer.validate_config(snapshot=snapshot)
+    if not val.success:
+        console.print(f"  [red]Error:[/red] {val.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {val.message}")
+
+    from nssec.core.cluster import save_cached_cluster
+    from nssec.modules.waf.cluster import as_discovery
+
+    if not save_cached_cluster(as_discovery(cluster)):
+        console.print("  [yellow]Warning:[/yellow] could not write the cluster peer cache")
+
+    _prompt_and_reload_apache(installer, yes)

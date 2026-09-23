@@ -14,9 +14,12 @@ import json
 import re
 
 from nssec.core.ssh import is_directory
+from nssec.modules.waf.cluster import ClusterPeers, cached_cluster_peers
 from nssec.modules.waf.config import (
     LEGACY_HTACCESS_PATHS,
     RESTRICT_CACHE_PATH,
+    RESTRICT_CLUSTER_BEGIN,
+    RESTRICT_CLUSTER_END,
     RESTRICT_COMPONENTS,
     RESTRICT_CONF_PATH,
     RESTRICT_CONF_TEMPLATE,
@@ -98,13 +101,14 @@ def parse_ips(path: str) -> list[str]:
     content = read_file(path)
     if not content:
         return []
+    # The cluster-peer block is managed from the SBUS manifest, not by the
+    # operator: leave it out so peers never leak into the saved IP cache.
+    content = _strip_cluster_block(content)
     # Drop comment lines first. Hand-edited files and NetSapiens' default
     # .htaccess often carry commented example directives (e.g.
     # "# Require ip <ADMIN-IP>"); without this the regexes below would scrape
     # the placeholder as a real IP and carry it into the generated config.
-    content = "\n".join(
-        line for line in content.splitlines() if not line.lstrip().startswith("#")
-    )
+    content = "\n".join(line for line in content.splitlines() if not line.lstrip().startswith("#"))
     ips: list[str] = []
     # Apache 2.4: Require ip <addr>
     ips.extend(re.findall(r"Require\s+ip\s+(\S+)", content))
@@ -122,6 +126,14 @@ def parse_ips(path: str) -> list[str]:
             seen.add(ip)
             unique.append(ip)
     return unique
+
+
+def _strip_cluster_block(content: str) -> str:
+    start = content.find(RESTRICT_CLUSTER_BEGIN)
+    if start == -1:
+        return content
+    end = content.find(RESTRICT_CLUSTER_END, start)
+    return content[:start] + (content[end + len(RESTRICT_CLUSTER_END) :] if end != -1 else "")
 
 
 def parse_conf_segments(path: str) -> list[str]:
@@ -196,16 +208,22 @@ def _partition_valid_ips(ips: list[str]) -> tuple[list[str], list[str]]:
     return valid, invalid
 
 
-def _render_conf(segments: list[str], ips: list[str]) -> str:
+def _render_conf(segments: list[str], ips: list[str], cluster: ClusterPeers | None = None) -> str:
     """Render the restrict Apache config for the given segments and IPs.
 
     Invalid entries are dropped here as a final safety net so no code path can
     emit a config that breaks Apache (and so a previously-poisoned on-disk
     config self-heals on the next add/remove/reapply).
+
+    SBUS cluster peers get their own marked block (``cluster`` None means the
+    cached peers): cores reach each other's /ndp/ and /LiCf/ from public IPs.
     """
     valid_ips, _ = _partition_valid_ips(ips)
+    if cluster is None:
+        cluster = cached_cluster_peers(read=read_file)
     content = render(
         RESTRICT_CONF_TEMPLATE,
+        **cluster.template_context(),
         managed_marker=RESTRICT_MANAGED_MARKER,
         segments="|".join(segments),
         ips=valid_ips,
@@ -327,7 +345,9 @@ def init_restrictions(
             (
                 label,
                 StepResult(
-                    message=_with_invalid(f"Would write {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)")
+                    message=_with_invalid(
+                        f"Would write {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)"
+                    )
                 ),
             )
         ]
@@ -340,7 +360,12 @@ def init_restrictions(
 
     save_cached_ips(all_ips)
     return [
-        (label, StepResult(message=_with_invalid(f"Wrote {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)")))
+        (
+            label,
+            StepResult(
+                message=_with_invalid(f"Wrote {RESTRICT_CONF_PATH} with {len(all_ips)} IP(s)")
+            ),
+        )
     ]
 
 
@@ -533,3 +558,26 @@ def remove_legacy_htaccess(dry_run: bool = False) -> list[tuple[str, StepResult]
         else:
             results.append((path, StepResult(success=False, error=f"Failed to remove {path}")))
     return results
+
+
+def rerender_with_cluster(cluster: ClusterPeers) -> StepResult:
+    """Rewrite a deployed restrict config with new cluster peers.
+
+    Segments and operator IPs are carried over from the deployed file; only
+    the cluster-peer block changes.  Skipped if restrictions are not deployed.
+    """
+    if not file_exists(RESTRICT_CONF_PATH):
+        return StepResult(skipped=True, message=f"{RESTRICT_CONF_PATH} not deployed")
+    segments = parse_conf_segments(RESTRICT_CONF_PATH)
+    if not segments:
+        return StepResult(
+            success=False,
+            error=f"Could not read the protected paths from {RESTRICT_CONF_PATH}",
+        )
+    ips = parse_ips(RESTRICT_CONF_PATH)
+    backup_file(RESTRICT_CONF_PATH)
+    if not write_file(RESTRICT_CONF_PATH, _render_conf(segments, ips, cluster)):
+        return StepResult(success=False, error=f"Failed to write {RESTRICT_CONF_PATH}")
+    return StepResult(
+        message=f"Wrote {RESTRICT_CONF_PATH} with {len(cluster.peers)} cluster peer IP(s)"
+    )

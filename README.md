@@ -246,6 +246,48 @@ sudo nssec waf evasive disable
 | `strict` | 15 req/page/s | 60 req/IP/s | 60s | Tuned for NetSapiens traffic patterns |
 
 Start with `standard` and review the Apache API Usage dashboard and mod_evasive block logs before switching to `strict`. Block events are logged to `/var/log/apache2/mod_evasive.log` for Loki/Grafana ingestion.
+s just emp
+### Cluster peers (SBUS)
+
+Cluster members deliver SBUS events to each other over HTTP, usually from
+public IPs that the RFC 1918 `DOSWhitelist` entries do not cover. A burst of
+API writes on one core fans out to every core; mod_evasive can mistake those
+deliveries for a flood and return 403, and because SBUS retries anything it
+could not deliver, the block keeps itself going for hours after the burst
+ends. nssec therefore allowlists every cluster member it finds in the SBUS
+manifest.
+
+```bash
+# Show the cached peers and which configs list them
+nssec waf cluster show
+
+# Re-discover peers, show what changed, rewrite the configs, reload Apache
+sudo nssec waf cluster refresh --dry-run
+sudo nssec waf cluster refresh
+```
+
+- Peers come from the `SBusClusterManifest` URL in
+  `/usr/local/NetSapiens/Sbus/bin/sbus.ini`. Every manifest host (cores, nsapi
+  and recording servers alike) is resolved to all of its A and AAAA records, and
+  this server's public IP (from `api.ipify.org`) is added for NATed cores.
+- The same list is written to mod_evasive (`evasive.conf`, IPv4 only, since
+  `DOSWhitelist` has no IPv6 support), the ModSecurity exclusions and the
+  admin-UI restrictions (`nssec-restrict.conf`, if deployed).
+- `nssec waf init` and `nssec waf update-exclusions` discover peers
+  automatically. `--no-cluster` skips discovery, `--no-public-ip-lookup` skips
+  the public IP, and `--exclude-host PATTERN` leaves matching hosts out (nothing
+  is excluded by default).
+- The last good result is cached in `/etc/nssec/cluster-peers.json`. If
+  discovery fails later, the cached peers are reused and nssec says so. A
+  failed discovery never breaks an install or drops the existing peers.
+- `refresh` runs `apachectl configtest` before the graceful reload, and puts
+  every file back as it was if the test fails.
+- `nssec waf status` shows the peer count and manifest age, and warns when a
+  manifest host has no entry in `evasive.conf`.
+
+The manifest is fetched without TLS verification, because clusters serve it
+with an internal certificate. Review the added peers in
+`refresh --dry-run` before applying.
 
 ## Server Types
 

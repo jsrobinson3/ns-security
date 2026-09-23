@@ -12,8 +12,11 @@ import shutil
 from pathlib import Path
 
 from nssec.core.ssh import is_directory, is_root
+from nssec.modules.waf.cluster import ClusterPeers, cached_cluster_peers, parse_evasive_profile
 from nssec.modules.waf.config import (
+    ABUSE_LIMITS,
     BACKUP_SUFFIX,
+    BLOCKED_USER_AGENTS,
     CRS_APT_PACKAGE,
     CRS_GITHUB_DOWNLOAD,
     CRS_INSTALL_DIR,
@@ -53,9 +56,11 @@ from nssec.modules.waf.utils import (
     detect_modsec_version,
     file_exists,
     package_installed,
+    parse_exclusion_toggles,
     parse_security2_conf,
     read_file,
     render,
+    restore_snapshot,
     run_cmd,
     version_gte,
     write_file,
@@ -118,6 +123,37 @@ def get_nodeping_ips() -> list[str]:
     return _parse_allowlist_ips(r"10002\d+")
 
 
+def get_exclusion_toggles() -> dict[str, bool]:
+    """Optional-feature toggles of the deployed exclusions conf (defaults if absent)."""
+    return parse_exclusion_toggles(read_file(NS_EXCLUSIONS_CONF) or "")
+
+
+def render_exclusions(
+    admin_ips: list[str],
+    nodeping_ips: list[str],
+    toggles: dict[str, bool],
+    cluster: ClusterPeers | None = None,
+) -> str:
+    """Render NS_EXCLUSIONS_TEMPLATE with every section's inputs supplied.
+
+    ``cluster`` None means the cached cluster peers, so a caller that is not
+    about cluster peers (e.g. an allowlist edit) never drops them.
+    """
+    if cluster is None:
+        cluster = cached_cluster_peers(read=read_file)
+    return render(
+        NS_EXCLUSIONS_TEMPLATE,
+        **cluster.template_context(),
+        admin_ips=admin_ips,
+        nodeping_ips=nodeping_ips,
+        toggles=toggles,
+        limits=ABUSE_LIMITS,
+        blocked_user_agents=BLOCKED_USER_AGENTS,
+        version=NS_EXCLUSIONS_VERSION,
+        template_hash=NS_EXCLUSIONS_HASH,
+    )
+
+
 def add_allowlisted_ip(ip: str) -> StepResult:
     """Add an IP address to the allowlist and regenerate exclusions config."""
     ip = normalize_ipmatch_entry(ip)
@@ -130,12 +166,10 @@ def add_allowlisted_ip(ip: str) -> StepResult:
     if file_exists(NS_EXCLUSIONS_CONF):
         backup_file(NS_EXCLUSIONS_CONF)
 
-    content = render(
-        NS_EXCLUSIONS_TEMPLATE,
+    content = render_exclusions(
         admin_ips=new_ips,
         nodeping_ips=get_nodeping_ips(),
-        version=NS_EXCLUSIONS_VERSION,
-        template_hash=NS_EXCLUSIONS_HASH,
+        toggles=get_exclusion_toggles(),
     )
     if not write_file(NS_EXCLUSIONS_CONF, content):
         return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
@@ -155,12 +189,10 @@ def remove_allowlisted_ip(ip: str) -> StepResult:
     if file_exists(NS_EXCLUSIONS_CONF):
         backup_file(NS_EXCLUSIONS_CONF)
 
-    content = render(
-        NS_EXCLUSIONS_TEMPLATE,
+    content = render_exclusions(
         admin_ips=new_ips,
         nodeping_ips=get_nodeping_ips(),
-        version=NS_EXCLUSIONS_VERSION,
-        template_hash=NS_EXCLUSIONS_HASH,
+        toggles=get_exclusion_toggles(),
     )
     if not write_file(NS_EXCLUSIONS_CONF, content):
         return StepResult(success=False, error=f"Failed to write {NS_EXCLUSIONS_CONF}")
@@ -306,12 +338,19 @@ class ModSecurityInstaller:
         msg = f"Configured ModSecurity (SecRuleEngine {self.mode})"
         return StepResult(message=msg)
 
-    def setup_evasive_config(self, profile: str = EVASIVE_DEFAULT_PROFILE) -> StepResult:
+    def setup_evasive_config(
+        self,
+        profile: str = EVASIVE_DEFAULT_PROFILE,
+        cluster: ClusterPeers | None = None,
+    ) -> StepResult:
         """Write the mod_evasive configuration with the given threshold profile.
 
         Profiles:
           - "standard" (default): high thresholds, only catches extreme floods.
           - "strict": tighter thresholds tuned for NetSapiens traffic patterns.
+
+        ``cluster`` None uses the cached cluster peers.  DOSWhitelist is
+        IPv4-only, so IPv6 peers are left out (and counted in a comment).
         """
         if not self.install_evasive:
             return StepResult(skipped=True, message="Evasive installation skipped")
@@ -323,9 +362,12 @@ class ModSecurityInstaller:
         if file_exists(EVASIVE_CONF):
             backup_file(EVASIVE_CONF)
 
+        if cluster is None:
+            cluster = cached_cluster_peers(read=read_file)
         thresholds = EVASIVE_PROFILES[profile]
         content = render(
             EVASIVE_CONF_TEMPLATE,
+            **cluster.template_context(),
             profile=profile,
             log_dir=EVASIVE_LOG_DIR,
             log_file=EVASIVE_LOG_FILE,
@@ -335,7 +377,22 @@ class ModSecurityInstaller:
             return StepResult(success=False, error=f"Failed to write {EVASIVE_CONF}")
 
         Path(EVASIVE_LOG_DIR).mkdir(parents=True, exist_ok=True)
-        return StepResult(message=f"Configured mod_evasive ({EVASIVE_CONF}, profile: {profile})")
+        msg = f"Configured mod_evasive ({EVASIVE_CONF}, profile: {profile})"
+        if cluster.peers:
+            msg += f", {len(cluster.ipv4)} cluster peer IP(s) whitelisted"
+            if cluster.ipv6:
+                msg += f" ({len(cluster.ipv6)} IPv6 left out: DOSWhitelist is IPv4-only)"
+        return StepResult(message=msg)
+
+    def refresh_evasive_cluster(self, cluster: ClusterPeers) -> StepResult:
+        """Re-render a deployed evasive.conf with new cluster peers, same profile."""
+        content = read_file(EVASIVE_CONF)
+        if content is None:
+            return StepResult(skipped=True, message=f"{EVASIVE_CONF} not deployed")
+        profile = parse_evasive_profile(content) or EVASIVE_DEFAULT_PROFILE
+        if profile not in EVASIVE_PROFILES:
+            profile = EVASIVE_DEFAULT_PROFILE
+        return self.setup_evasive_config(profile=profile, cluster=cluster)
 
     def set_evasive_state(self, enable: bool) -> StepResult:
         """Enable or disable the mod_evasive Apache module.
@@ -494,6 +551,8 @@ class ModSecurityInstaller:
         self,
         admin_ips: list[str] | None = None,
         nodeping_ips: list[str] | None = None,
+        toggles: dict[str, bool] | None = None,
+        cluster: ClusterPeers | None = None,
     ) -> StepResult:
         """Write NetSapiens-specific ModSecurity exclusions.
 
@@ -502,7 +561,10 @@ class ModSecurityInstaller:
         "keep whatever is already deployed" — otherwise a caller that knows
         about one list (e.g. update-exclusions, which fetches NodePing IPs but
         has no notion of the admin allowlist) would silently drop the other.
-        Pass an empty list to clear a section deliberately.
+        Pass an empty list to clear a section deliberately.  ``toggles`` holds
+        only the optional features to change (e.g. ``{"token_audit": True}``);
+        every toggle not named keeps its deployed setting.  ``cluster`` None
+        uses the cached cluster peers.
         """
         if self.dry_run:
             return StepResult(message=f"Would write {NS_EXCLUSIONS_CONF}")
@@ -512,6 +574,7 @@ class ModSecurityInstaller:
             admin_ips = get_allowlisted_ips()
         if nodeping_ips is None:
             nodeping_ips = get_nodeping_ips()
+        toggles = {**get_exclusion_toggles(), **(toggles or {})}
 
         # Guard against a silent wipe: if we are carrying the admin allowlist
         # forward (caller did not pass one explicitly) but the deployed file
@@ -536,13 +599,7 @@ class ModSecurityInstaller:
         if file_exists(NS_EXCLUSIONS_CONF):
             backup_file(NS_EXCLUSIONS_CONF)
 
-        content = render(
-            NS_EXCLUSIONS_TEMPLATE,
-            admin_ips=admin_ips,
-            nodeping_ips=nodeping_ips,
-            version=NS_EXCLUSIONS_VERSION,
-            template_hash=NS_EXCLUSIONS_HASH,
-        )
+        content = render_exclusions(admin_ips, nodeping_ips, toggles, cluster)
         if not write_file(NS_EXCLUSIONS_CONF, content):
             return StepResult(
                 success=False,
@@ -580,13 +637,22 @@ class ModSecurityInstaller:
             return StepResult(success=False, error=f"Failed to write {SECURITY2_CONF}")
         return StepResult(message=f"Wrote {SECURITY2_CONF}")
 
-    def validate_config(self) -> StepResult:
-        """Run apache2ctl configtest. Rolls back on failure."""
+    def validate_config(self, snapshot: dict[str, str | None] | None = None) -> StepResult:
+        """Run apache2ctl configtest. Rolls back on failure.
+
+        With ``snapshot`` (from ``snapshot_files``), rolls back to exactly
+        those pre-write contents, including files outside the default rollback
+        list (the restrict config) and files that did not exist before.
+        Without it, restores the .bak.nssec files.
+        """
         if self.dry_run:
             return StepResult(message="Would run: apache2ctl configtest")
         stdout, stderr, rc = run_cmd(["apache2ctl", "configtest"])
         if rc != 0:
-            self._rollback()
+            if snapshot is not None:
+                restore_snapshot(snapshot)
+            else:
+                self._rollback()
             err = f"Apache config test failed (rolled back): {stderr or stdout}"
             return StepResult(success=False, error=err)
         return StepResult(message="Apache config test passed")
@@ -646,6 +712,8 @@ class ModSecurityInstaller:
         self,
         admin_ips: list[str] | None = None,
         nodeping_ips: list[str] | None = None,
+        toggles: dict[str, bool] | None = None,
+        cluster: ClusterPeers | None = None,
     ) -> InstallResult:
         """Run the full installation sequence."""
         result = InstallResult(mode=self.mode)
@@ -662,12 +730,15 @@ class ModSecurityInstaller:
             ("Install packages", self.install_packages),
             ("Enable Apache modules", self.enable_modules),
             ("Configure ModSecurity", self.setup_config),
-            ("Configure mod_evasive", self.setup_evasive_config),
+            (
+                "Configure mod_evasive",
+                lambda: self.setup_evasive_config(cluster=cluster),
+            ),
             ("Enable mod_evasive", lambda: self.set_evasive_state(True)),
             ("Install OWASP CRS v4", self.install_crs_v4),
             (
                 "Install NS exclusions",
-                lambda: self.install_exclusions(admin_ips, nodeping_ips),
+                lambda: self.install_exclusions(admin_ips, nodeping_ips, toggles, cluster),
             ),
             ("Update security2.conf", self.write_security2_conf),
             ("Validate Apache config", self.validate_config),

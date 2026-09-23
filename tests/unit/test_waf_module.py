@@ -590,12 +590,13 @@ class TestNodepingExclusionsTemplate:
 
     def test_renders_nodeping_section(self):
         """Should render NodePing IP rules in the exclusions template."""
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        rendered = render_exclusions(
             admin_ips=[],
             nodeping_ips=["52.71.195.82", "3.21.118.250"],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
         assert "NodePing monitoring probe IPs" in rendered
         assert "52.71.195.82" in rendered
@@ -605,35 +606,38 @@ class TestNodepingExclusionsTemplate:
 
     def test_omits_nodeping_section_when_empty(self):
         """Should not render NodePing section when list is empty."""
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        rendered = render_exclusions(
             admin_ips=[],
             nodeping_ips=[],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
         assert "NodePing" not in rendered
 
     def test_nodeping_rule_ids_separate_from_admin(self):
         """NodePing rules should use 1000200+ range, admin uses 1000100+."""
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        rendered = render_exclusions(
             admin_ips=["192.168.1.100"],
             nodeping_ips=["52.71.195.82"],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
         assert "id:1000101" in rendered  # admin IP
         assert "id:1000201" in rendered  # NodePing IP
 
     def test_nodeping_rules_bypass_crs(self):
         """NodePing rules should bypass all CRS rules."""
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        rendered = render_exclusions(
             admin_ips=[],
             nodeping_ips=["52.71.195.82"],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
         # Find the NodePing rule section
         lines = rendered.split("\n")
@@ -646,12 +650,13 @@ class TestOAuth2TokenExclusion:
     """Tests for the /ns-api/oauth2/token 920180 exclusion in the template."""
 
     def _render(self):
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        return Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        return render_exclusions(
             admin_ips=[],
             nodeping_ips=[],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
 
     def test_scopes_rule_to_token_endpoint(self):
@@ -675,12 +680,13 @@ class TestSanitiseArgExclusion:
     """Tests for the audit-log credential redaction rule (id:1000015)."""
 
     def _render(self):
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        return Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        return render_exclusions(
             admin_ips=[],
             nodeping_ips=[],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
 
     def _block(self, rendered):
@@ -705,6 +711,7 @@ class TestSanitiseArgExclusion:
             "auth_code",
             "nsToken",
             "ns_t",
+            "passcode",
         ):
             assert f"sanitiseArg:{name}" in block
 
@@ -735,12 +742,13 @@ class TestLegacyMobileFalsePositiveExclusions:
     """Tests for the 942220 / 933150 exclusions covering legacy mobile clients."""
 
     def _render(self):
-        from nssec.modules.waf.config import NS_EXCLUSIONS_TEMPLATE
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
 
-        return Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        return render_exclusions(
             admin_ips=[],
             nodeping_ips=[],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
 
     def _block(self, rendered, rule_id):

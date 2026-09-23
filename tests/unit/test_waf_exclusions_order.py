@@ -11,9 +11,10 @@ from unittest.mock import patch
 
 from jinja2 import Template
 
+from nssec.modules.waf import render_exclusions
 from nssec.modules.waf.config import (
+    EXCLUSION_TOGGLE_DEFAULTS,
     NS_EXCLUSIONS_CONF,
-    NS_EXCLUSIONS_TEMPLATE,
     SECURITY2_CONF_TEMPLATE,
 )
 from nssec.modules.waf.status import _exclusions_load_before_crs
@@ -94,12 +95,10 @@ class TestExclusionsLoadOrderDetection:
 
 class TestLocalhostExclusion:
     def _render(self, **kwargs):
-        return Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
-            version="7",
-            template_hash="abc",
+        return render_exclusions(
             admin_ips=kwargs.get("admin_ips", []),
             nodeping_ips=kwargs.get("nodeping_ips", []),
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
 
     def test_localhost_rule_covers_ipv4_and_ipv6_loopback(self):

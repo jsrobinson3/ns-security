@@ -72,7 +72,51 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "9"
+NS_EXCLUSIONS_VERSION = "10"
+
+# Optional features of the exclusions file, with their defaults.  The deployed
+# file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
+# re-render keeps whatever was chosen; a file without the line (older
+# version) gets the default.
+EXCLUSION_TOGGLE_DEFAULTS = {
+    "block_harvest_ua": True,
+    "device_read_allowlist_only": False,
+    "device_walk": True,
+    "token_audit": False,
+}
+
+# Abuse-protection limits (seconds unless noted).  Applies per client IP;
+# allowlisted admin/NodePing IPs and localhost are exempt.
+ABUSE_LIMITS = {
+    # Device walking (v1 and v2 API): reading devices (which carry SIP credentials)
+    # across many tenant domains is credential harvesting.
+    "max_domains": 2,  # distinct domains before a short block...
+    "domain_window": 300,  # ...within this window
+    "max_reads": 60,  # device reads before a short block...
+    "read_window": 60,  # ...within this window
+    "block_period": 600,  # short block
+    "repeat_window": 86400,  # a second offence within this window...
+    "long_block_period": 86400,  # ...gets the long block
+    # Slow walk: distinct domains within a long window.  Must stay well below
+    # ~15: ModSecurity stores the whole per-IP domain list in one ~1KB DBM
+    # record and silently stops saving it once the record is too large.
+    "slow_max_domains": 10,
+    "slow_window": 86400,
+    # Harvesting user agent: ban the source IP from /ns-api/ for this long.
+    "ua_ban_period": 86400,
+}
+
+# SBUS cluster peers (see nssec.core.cluster).  ModSecurity allowlist rules
+# are numbered CLUSTER_RULE_ID_BASE + n over the sorted peer IPs, so they stay
+# stable when the manifest is reordered; room for 999 addresses.
+CLUSTER_RULE_ID_BASE = 1001000
+CLUSTER_BLOCK_END = "# ---- end cluster peers ----"
+RESTRICT_CLUSTER_BEGIN = "# BEGIN nssec cluster peers (managed by nssec waf cluster refresh)"
+RESTRICT_CLUSTER_END = "# END nssec cluster peers"
+
+# User agents of known bulk-harvesting tools (matched case-insensitively as a
+# substring of User-Agent).
+BLOCKED_USER_AGENTS = ["harvest/"]
 
 # ---------------------------------------------------------------------------
 # Jinja2 Templates
@@ -211,7 +255,9 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # Generated: {{ timestamp }}
 # nssec-exclusions-version: {{ version }}
 # nssec-exclusions-hash: {{ template_hash }}
-#
+{% for name, on in toggles.items() | sort -%}
+# nssec-toggle: {{ name }}={{ 'on' if on else 'off' }}
+{% endfor -%}#
 # These rules prevent false positives on the NetSapiens management UI
 # and API endpoints while keeping CRS protection active for everything else.
 #
@@ -230,10 +276,13 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # Masking is by argument NAME, so `password` is caught on every endpoint that
 # uses it, not just the token endpoint. This is non-disruptive and never blocks.
 #
-# Scope note: this only covers the ModSecurity audit log. The Apache access_log
-# records the request line (%r) independently and still stores query-string
-# secrets in cleartext — that needs a separate LogFormat/SetEnvIf fix in the
-# vhost, outside nssec's control.
+# Scope note: ModSecurity 2.9 masks the arguments in place while it writes an
+# audit-log entry, and Apache writes the access_log (%r) afterwards, so the
+# access_log line is masked too -- but only for requests that get an audit-log
+# entry (relevant status, a matched rule with auditlog, or token audit on).
+# Every other request still stores query-string secrets in the access_log in
+# cleartext; a guaranteed fix needs a LogFormat/SetEnvIf change in the vhost,
+# outside nssec's control.
 #
 # `ctl:sanitiseArg` does not exist in ModSecurity 2.x (not in the ctl option
 # list), so this is an unconditional SecAction. phase:2 matches the documented
@@ -250,7 +299,8 @@ SecAction \\
      sanitiseArg:access_token,\\
      sanitiseArg:auth_code,\\
      sanitiseArg:nsToken,\\
-     sanitiseArg:ns_t"
+     sanitiseArg:ns_t,\\
+     sanitiseArg:passcode"
 
 # ---- Admin UI form submissions and third-party tracking cookies ----
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
@@ -441,7 +491,8 @@ SecRule REMOTE_ADDR "@ipMatch 127.0.0.1,::1" \\
      phase:1,\\
      pass,\\
      nolog,\\
-     ctl:ruleRemoveByTag=OWASP_CRS"
+     ctl:ruleRemoveByTag=OWASP_CRS,\\
+     ctl:ruleRemoveByTag=nssec-abuse"
 
 {% if admin_ips %}
 # ---- Allowlisted admin IPs (reduced WAF strictness) ----
@@ -451,7 +502,8 @@ SecRule REMOTE_ADDR "@ipMatch {{ ip }}" \\
      phase:1,\\
      pass,\\
      nolog,\\
-     ctl:ruleRemoveByTag=OWASP_CRS"
+     ctl:ruleRemoveByTag=OWASP_CRS,\\
+     ctl:ruleRemoveByTag=nssec-abuse"
 {% endfor %}
 {% endif %}
 
@@ -465,8 +517,436 @@ SecRule REMOTE_ADDR "@ipMatch {{ ip }}" \\
      phase:1,\\
      pass,\\
      nolog,\\
-     ctl:ruleRemoveByTag=OWASP_CRS"
+     ctl:ruleRemoveByTag=OWASP_CRS,\\
+     ctl:ruleRemoveByTag=nssec-abuse"
 {% endfor %}
+{% endif %}
+
+{% if cluster_peers %}
+# ---- SBUS cluster peers (reduced WAF strictness) ----
+# Every cluster member delivers SBUS events to this server over HTTP; CRS
+# must not score them and the abuse limits must not count them.
+# Source: SBUS manifest {{ cluster_manifest_url }}, {{ cluster_host_count }} host(s), discovered {{ cluster_discovered_at }}.
+# Manage with: nssec waf cluster show|refresh
+{% for ip, host in cluster_peers %}
+# {{ host }}
+SecRule REMOTE_ADDR "@ipMatch {{ ip }}" \\
+    "id:{{ cluster_rule_id_base + loop.index }},\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveByTag=OWASP_CRS,\\
+     ctl:ruleRemoveByTag=nssec-abuse"
+{% endfor %}
+{% endif %}
+
+# ===========================================================================
+# Abuse protection
+# ===========================================================================
+# Unlike everything above, these rules deny.  They follow the WAF engine
+# mode: under DetectionOnly they only log (state is still tracked, so the
+# log shows what would have been blocked); after 'nssec waf enable' they
+# block.  Toggle with 'nssec waf update-exclusions --[no-]device-walk' and
+# '--[no-]block-harvest-ua'.
+#
+# Per-IP state is kept in two persistent collections (SecDataDir):
+#   RESOURCE "nssec_abuse_<ip>"   counters, block flags, 5-minute domain list
+#   USER     "nssec_walk24_<ip>"  24-hour domain list
+# CRS owns IP (keyed on IP + User-Agent hash, which a scraper could rotate)
+# and GLOBAL, and never touches RESOURCE or USER.  Each collection is stored
+# as a single ~1KB DBM record, so domains are stored as 8-hex-char hashes and
+# no new domains are recorded while an IP is blocked; that keeps both
+# records far below the size at which ModSecurity can no longer save them.
+#
+# Stateful rules carry tag nssec-abuse, which the localhost and IP allowlist
+# rules above remove, so those sources are never counted or banned.
+{% if toggles.device_walk or toggles.block_harvest_ua %}
+
+SecRule REQUEST_FILENAME "@beginsWith /ns-api/" \\
+    "id:1000320,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     initcol:resource=nssec_abuse_%{REMOTE_ADDR}"
+{% endif %}
+{% if toggles.block_harvest_ua %}
+
+# ---- Bulk-harvesting user agents ----
+# A matching request is denied, and the source IP is banned from /ns-api/
+# for {{ limits.ua_ban_period }}s so switching to an innocuous User-Agent does not help.
+{% for ua in blocked_user_agents %}
+SecRule REQUEST_HEADERS:User-Agent "@contains {{ ua }}" \\
+    "id:{{ 1000300 + loop.index0 }},\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     t:none,t:lowercase,\\
+     setvar:tx.nssec_bad_ua=1"
+{% endfor %}
+
+SecRule TX:nssec_bad_ua "@eq 1" \\
+    "id:1000330,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     initcol:resource=nssec_abuse_%{REMOTE_ADDR},\\
+     setvar:resource.ua_ban=1,\\
+     expirevar:resource.ua_ban={{ limits.ua_ban_period }}"
+
+SecRule TX:nssec_bad_ua "@eq 1" \\
+    "id:1000331,\\
+     phase:1,\\
+     deny,\\
+     status:403,\\
+     log,\\
+     msg:'nssec: blocked harvesting user agent',\\
+     logdata:'%{REQUEST_HEADERS.User-Agent}',\\
+     tag:'nssec',\\
+     tag:'nssec-harvest-ua',\\
+     severity:'CRITICAL'"
+
+SecRule RESOURCE:ua_ban "@eq 1" \\
+    "id:1000332,\\
+     phase:1,\\
+     deny,\\
+     status:403,\\
+     log,\\
+     msg:'nssec: ns-api request denied, IP is banned for a harvesting user agent',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     tag:'nssec-harvest-ua',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule REQUEST_FILENAME "@beginsWith /ns-api/" "t:none"
+{% endif %}
+{% if toggles.device_walk or toggles.device_read_allowlist_only %}
+
+# ---- Device walking (v1 and v2 API) ----
+# Device records include SIP registration and provisioning passwords.  They
+# are read with:
+#   v1  GET/POST /ns-api/?object=device&action=read   (domain in domain=)
+#   v2  GET /ns-api/v2/domains/{domain}/devices
+#       GET /ns-api/v2/domains/{domain}/users/{user}/devices[/{device}]
+#                                                     (domain in the path)
+#       GET .../devices/count, .../devices/{device}/count and
+#           /ns-api/v2/resellers/{reseller}/devices/count
+# Counts are included: grabbing the count is the usual first step before
+# pulling a domain's devices.
+# A scraper walks tenant after tenant reading devices;
+# legitimate users stay inside their own domain.  Per IP:
+#   * more than {{ limits.max_domains }} distinct domains within {{ limits.domain_window }}s, or more than {{ limits.max_reads }}
+#     device reads within {{ limits.read_window }}s: blocked for {{ limits.block_period }}s.  Tripping again within
+#     {{ limits.repeat_window }}s of an earlier block: blocked for {{ limits.long_block_period }}s.
+#   * more than {{ limits.slow_max_domains }} distinct domains within {{ limits.slow_window }}s (a slow walk that stays
+#     under the short-window limit): blocked for {{ limits.long_block_period }}s.
+# A read without a usable domain (no domain= on v1; "~" for the token's own
+# domain or "*" for all domains on v2) counts as one extra domain, so it
+# cannot be used to read outside the counted domains for free.
+# A block only denies device reads.  Phase 2 so POSTed form bodies are
+# inspected as well as query strings.
+# Device reads are identified once here for both the allowlist-only rule and
+# the walk limits.
+SecRule REQUEST_FILENAME "@rx ^/ns-api/(?:index\\.php)?$" \\
+    "id:1000340,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     t:none,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule ARGS:object "@streq device" \\
+        "t:none,t:lowercase,\\
+         chain"
+        SecRule ARGS:action "@streq read" \\
+            "t:none,t:lowercase,\\
+             setvar:tx.nssec_device_read=1{% if toggles.device_walk %},\\
+             initcol:user=nssec_walk24_%{REMOTE_ADDR}{% endif %}"
+
+SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$" \\
+    "id:1000339,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     t:none,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/domains/([^/]+)/(?:users/[^/]+/)?devices(?:/[^/]+)?(?:/count)?/?$" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         capture,\\
+         setvar:tx.nssec_device_read=1,\\
+         setvar:'tx.nssec_v2_domain=%{TX.1}'{% if toggles.device_walk %},\\
+         initcol:user=nssec_walk24_%{REMOTE_ADDR}{% endif %}"
+
+# Reseller-wide device count: no domain in the path, so it is recorded as a
+# read without a usable domain.
+SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$" \\
+    "id:1000335,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     t:none,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/resellers/[^/]+/devices/count/?$" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         setvar:tx.nssec_device_read=1,\\
+         setvar:tx.nssec_v2_domain=*{% if toggles.device_walk %},\\
+         initcol:user=nssec_walk24_%{REMOTE_ADDR}{% endif %}"
+
+{% endif %}
+{% if toggles.device_read_allowlist_only %}
+
+# ---- Bulk device reads (v1 and v2 API): allowlisted sources only ----
+# Enabled with 'nssec waf update-exclusions --device-read-allowlist-only'.
+# A domain-wide device list is denied unless it comes from localhost, an
+# allowlisted admin IP, a NodePing probe or an SBUS cluster peer (all of
+# which remove tag nssec-abuse above).  Reads of one device or of one user's
+# devices are allowed; they still count toward the walk limits.  Bulk means:
+#   v1  object=device&action=read with no real user= or device= value
+#       (empty or wildcard values do not count as scoping the read)
+#   v2  GET /ns-api/v2/domains/{domain}/devices or .../users/*/devices
+# Device counts are never bulk reads (they return numbers only), but like
+# every device read they still count toward the walk limits.
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000336,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &TX:nssec_v2_domain "@eq 0" \\
+        "chain"
+        SecRule ARGS:user|ARGS:device "@rx ^[A-Za-z0-9._@+-]+$" \\
+            "t:none,\\
+             setvar:tx.nssec_device_scoped=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000337,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &TX:nssec_v2_domain "@eq 0" \\
+        "chain"
+        SecRule &TX:nssec_device_scoped "@eq 0" \\
+            "setvar:tx.nssec_device_bulk=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000338,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/domains/[^/]+/(?:users/\\*/)?devices/?$" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         setvar:tx.nssec_device_bulk=1"
+
+SecRule TX:nssec_device_bulk "@eq 1" \\
+    "id:1000360,\\
+     phase:2,\\
+     deny,\\
+     status:403,\\
+     log,\\
+     msg:'nssec: bulk device read denied, source IP is not allowlisted',\\
+     logdata:'domain=%{ARGS.domain}%{TX.nssec_v2_domain}',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     severity:'CRITICAL'"
+{% endif %}
+{% if toggles.device_walk %}
+
+# Snapshot whether the IP was already blocked, so reads made during a block
+# are neither recorded nor counted as new offences.
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000341,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule RESOURCE:walk_block "@eq 1" \\
+        "setvar:tx.nssec_was_blocked=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000342,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &TX:nssec_was_blocked "@eq 0" \\
+        "chain"
+        SecRule ARGS:domain|TX:nssec_v2_domain "@rx ^[a-z0-9][a-z0-9._-]{0,252}$" \\
+            "t:none,t:lowercase,\\
+             setvar:tx.nssec_domain_ok=1"
+
+# Record the domain (as a hash) in both windows.
+SecRule TX:nssec_domain_ok "@eq 1" \\
+    "id:1000343,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule ARGS:domain|TX:nssec_v2_domain "@rx ^([0-9a-f]{8})" \\
+        "t:none,t:lowercase,t:sha1,t:hexEncode,\\
+         capture,\\
+         setvar:'resource.w_%{TX.1}=1',\\
+         expirevar:'resource.w_%{TX.1}={{ limits.domain_window }}',\\
+         setvar:'user.w_%{TX.1}=1',\\
+         expirevar:'user.w_%{TX.1}={{ limits.slow_window }}'"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000344,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &TX:nssec_was_blocked "@eq 0" \\
+        "chain"
+        SecRule &TX:nssec_domain_ok "@eq 0" \\
+            "setvar:resource.w_none=1,\\
+             expirevar:resource.w_none={{ limits.domain_window }},\\
+             setvar:user.w_none=1,\\
+             expirevar:user.w_none={{ limits.slow_window }}"
+
+# Read counter: the fixed window starts on the first read only, so steady
+# traffic cannot keep pushing the expiry out.
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000345,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &RESOURCE:device_reads "@eq 0" \\
+        "setvar:resource.device_reads=0,\\
+         expirevar:resource.device_reads={{ limits.read_window }}"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000346,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     setvar:resource.device_reads=+1"
+
+# ---- Offence detection (only for IPs not already blocked) ----
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000347,\\
+     phase:2,\\
+     pass,\\
+     log,\\
+     msg:'nssec: device walking across %{MATCHED_VAR} domains in {{ limits.domain_window }}s',\\
+     logdata:'domain=%{ARGS.domain}%{TX.nssec_v2_domain}',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule &TX:nssec_was_blocked "@eq 0" \\
+        "chain"
+        SecRule &RESOURCE:/^w_/ "@gt {{ limits.max_domains }}" \\
+            "setvar:tx.nssec_walk_trip=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000348,\\
+     phase:2,\\
+     pass,\\
+     log,\\
+     msg:'nssec: device read rate exceeded (%{MATCHED_VAR} reads in {{ limits.read_window }}s)',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule &TX:nssec_was_blocked "@eq 0" \\
+        "chain"
+        SecRule RESOURCE:device_reads "@gt {{ limits.max_reads }}" \\
+            "setvar:tx.nssec_walk_trip=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000349,\\
+     phase:2,\\
+     pass,\\
+     log,\\
+     msg:'nssec: slow device walk across %{MATCHED_VAR} domains in {{ limits.slow_window }}s',\\
+     logdata:'domain=%{ARGS.domain}%{TX.nssec_v2_domain}',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule &TX:nssec_was_blocked "@eq 0" \\
+        "chain"
+        SecRule &USER:/^w_/ "@gt {{ limits.slow_max_domains }}" \\
+            "setvar:tx.nssec_slow_trip=1"
+
+# ---- Block and escalation ----
+SecRule TX:nssec_walk_trip "@eq 1" \\
+    "id:1000350,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     setvar:resource.walk_strikes=+1,\\
+     expirevar:resource.walk_strikes={{ limits.repeat_window }},\\
+     setvar:resource.walk_block=1,\\
+     expirevar:resource.walk_block={{ limits.block_period }}"
+
+SecRule TX:nssec_walk_trip "@eq 1" \\
+    "id:1000351,\\
+     phase:2,\\
+     pass,\\
+     log,\\
+     msg:'nssec: repeat device-walk offender (%{MATCHED_VAR} strikes), blocked for {{ limits.long_block_period }}s',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule RESOURCE:walk_strikes "@gt 1" \\
+        "expirevar:resource.walk_block={{ limits.long_block_period }}"
+
+SecRule TX:nssec_slow_trip "@eq 1" \\
+    "id:1000352,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     setvar:resource.walk_strikes=+1,\\
+     expirevar:resource.walk_strikes={{ limits.repeat_window }},\\
+     setvar:resource.walk_block=1,\\
+     expirevar:resource.walk_block={{ limits.long_block_period }}"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000353,\\
+     phase:2,\\
+     deny,\\
+     status:403,\\
+     log,\\
+     msg:'nssec: device read denied, IP is blocked for device walking',\\
+     tag:'nssec',\\
+     tag:'nssec-abuse',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule RESOURCE:walk_block "@eq 1" "t:none"
+{% endif %}
+{% if toggles.token_audit %}
+
+# ---- Token endpoint audit logging (verbose mode) ----
+# Enabled with 'nssec waf update-exclusions --token-audit'.  Writes every
+# token request to the audit log regardless of status.
+# Credential values (password, client_secret, tokens) are masked by the
+# sanitiseArg rule (1000015) in form and JSON bodies alike; usernames and
+# every other field are logged as sent.
+SecRule REQUEST_URI "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
+    "id:1000400,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:auditEngine=On"
 {% endif %}
 """
 
@@ -575,6 +1055,14 @@ RESTRICT_CONF_TEMPLATE = """\
 {%- for ip in ips %}
         Require ip {{ ip }}
 {%- endfor %}
+{%- if cluster_peers %}
+        {{ restrict_cluster_begin }}
+{%- for ip, host in cluster_peers %}
+        # {{ host }}
+        Require ip {{ ip }}
+{%- endfor %}
+        {{ restrict_cluster_end }}
+{%- endif %}
     </RequireAny>
 </LocationMatch>
 """
@@ -638,6 +1126,22 @@ EVASIVE_CONF_TEMPLATE = """\
     DOSWhitelist            172.30.*.*
     DOSWhitelist            172.31.*.*
     DOSWhitelist            192.168.*.*
+{%- if cluster_peers %}
+
+    # ---- Cluster peers (SBUS manifest: {{ cluster_manifest_url }}, {{ cluster_host_count }} hosts, {{ cluster_discovered_at }}) ----
+    # Cluster members deliver SBUS events to each other over public IPs; a
+    # burst of events must not be mistaken for a flood (SBUS retries denied
+    # deliveries, so a block keeps itself going).  Manage with:
+    # nssec waf cluster show|refresh
+{%- for ip, host in cluster_ipv4 %}
+    # {{ host }}
+    DOSWhitelist            {{ ip }}
+{%- endfor %}
+{%- if cluster_ipv6 %}
+    # Not listed: {{ cluster_ipv6 | length }} IPv6 peer address(es) - DOSWhitelist is IPv4-only.
+{%- endif %}
+    {{ cluster_block_end }}
+{%- endif %}
 </IfModule>
 """
 
