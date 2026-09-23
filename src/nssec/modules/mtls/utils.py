@@ -35,12 +35,18 @@ def read_file(path: str) -> str | None:
 
 
 def backup_file(path: str) -> str | None:
-    """Create a backup of a file. Returns backup path or None."""
+    """Snapshot a file to *path*.bak.nssec, overwriting any prior snapshot.
+
+    Callers take this snapshot immediately before writing new content, and
+    `rollback()` restores it if the write turns out to break
+    `apache2ctl configtest`. It must always reflect the last-known-good
+    state, not the first one ever seen — a stale, never-refreshed backup
+    would make rollback silently discard every change made since, instead
+    of just the one that failed.
+    """
     if not file_exists(path):
         return None
     backup = path + BACKUP_SUFFIX
-    if file_exists(backup):
-        return backup  # Already backed up from a previous run
     shutil.copy2(path, backup)
     return backup
 
