@@ -540,6 +540,61 @@ sudo nssec waf evasive enable
 sudo nssec waf evasive disable
 ```
 
+## API Scrape Protection
+
+mod_evasive stops floods, not harvesting. It counts requests per second and keys on the URI path without the query string, so a client that steadily walks every tenant with `GET /ns-api/?object=device&action=read&domain=<tenant>` at a few requests per second never trips it, even on the `strict` profile.
+
+`nssec waf scrape-protection` deploys a separate ModSecurity rules file (`/etc/modsecurity/netsapiens-scrape-protection.conf`) that tracks each client IP on `/ns-api/` and flags three patterns:
+
+| Signal | Rule | What it catches |
+|--------|------|-----------------|
+| Scraper User-Agent | 1002002 | Tools that announce themselves (default: `harvest/`). Trivial to evade; a cheap first line. |
+| Request budget | 1002022 | More than `max_requests` `/ns-api/` calls per IP in the window. |
+| Cross-domain enumeration | 1002044 | One IP **reading** more than `max_domains` distinct tenant domains in the window. The primary signal: normal integrations stay inside one tenant or a few. |
+
+Only reads count toward enumeration (v1 `action=read|count|list`, or `GET` for v2 `/ns-api/v2/domains/<domain>/...`): bulk provisioning across tenants is a normal reseller workflow.
+
+### Profiles
+
+| Profile | Window | Max requests / IP | Max domains read / IP | Flag duration |
+|---------|:------:|:-----------------:|:---------------------:|:-------------:|
+| `standard` | 600s | 3000 | 50 | 1800s |
+| `strict` | 600s | 1000 | 15 | 3600s |
+
+Counters use a fixed window that starts at a client's first request, not a sliding idle timeout. Once over a limit, a client is flagged for the flag duration: in `detect` mode the match is logged once per flag period; in `block` mode every `/ns-api/` request is refused with HTTP 429 until the flag expires.
+
+### Rollout
+
+```bash
+# 1. Deploy in detect mode (log only)
+sudo nssec waf scrape-protection enable
+
+# 2. Watch for a week — who trips which limit?
+grep 'nssec: ' /var/log/apache2/error.log
+
+# 3. Exempt legitimate cross-tenant integrations, tune if needed
+sudo nssec waf scrape-protection enable --exempt-ip 198.51.100.20 --max-domains 80
+
+# 4. Enforce (settings from earlier runs are kept)
+sudo nssec waf scrape-protection enable --mode block
+
+# Status / removal
+nssec waf scrape-protection status
+sudo nssec waf scrape-protection disable
+```
+
+Block mode also requires `SecRuleEngine On` (`nssec waf enable`); under `DetectionOnly` the deny actions are only logged.
+
+### Exemptions
+
+Localhost is always exempt. The operator exemption policy also considers the WAF admin allowlist (`--exempt-admin-ips/--no-exempt-admin-ips`), this node's own addresses (server-side portal calls can reach the API through the public hostname), and any `--exempt-ip` entries. `enable` prints the effective exemption list before applying.
+
+### Limitations
+
+- **Per node.** Counters live in ModSecurity collections under `SecDataDir` on each server; a scraper spread across nodes gets a budget on each. Cluster-wide limits need an edge layer (CDN or load balancer).
+- **Proxies.** Behind a reverse proxy or load balancer every client shares the proxy's address unless `mod_remoteip` is configured. Fix that before switching to block mode.
+- **Authorization is the real control.** A client reading every tenant holds a token with cross-domain scope. These rules slow harvesting down; revoking and scoping tokens stops it.
+
 ## Path Restrictions (.htaccess)
 
 NetSapiens recommends restricting access to sensitive directories using `.htaccess` IP allowlists. This limits who can reach the admin login page, API, and provisioning endpoints.
@@ -621,6 +676,7 @@ sudo apache2ctl configtest && sudo systemctl reload apache2
 |------|---------|
 | `/etc/modsecurity/modsecurity.conf` | Main ModSecurity configuration |
 | `/etc/modsecurity/netsapiens-exclusions.conf` | NS-specific false positive exclusions |
+| `/etc/modsecurity/netsapiens-scrape-protection.conf` | API scrape protection rules (only while enabled) |
 | `/etc/modsecurity/crs/crs-setup.conf` | CRS settings (paranoia level, thresholds) |
 | `/etc/modsecurity/crs/rules/*.conf` | CRS rule files (do not edit) |
 | `/etc/apache2/mods-available/security2.conf` | Apache Include directives |

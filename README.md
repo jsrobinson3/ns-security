@@ -247,6 +247,25 @@ sudo nssec waf evasive disable
 
 Start with `standard` and review the Apache API Usage dashboard and mod_evasive block logs before switching to `strict`. Block events are logged to `/var/log/apache2/mod_evasive.log` for Loki/Grafana ingestion.
 
+### API Scrape Protection
+
+mod_evasive counts per second and ignores query strings, so a steady crawl of `/ns-api/?...&domain=<every tenant>` never trips it. Scrape protection deploys ModSecurity rules that track each client IP across a 10-minute window and flag scraper User-Agents, request budgets, and **reads across many distinct tenant domains**. Settings persist between runs.
+
+```bash
+# Deploy in detect mode (log only), then review matches
+sudo nssec waf scrape-protection enable
+grep 'nssec: ' /var/log/apache2/error.log
+
+# Exempt a legitimate cross-tenant integration, then enforce (HTTP 429)
+sudo nssec waf scrape-protection enable --exempt-ip 198.51.100.20
+sudo nssec waf scrape-protection enable --mode block
+
+nssec waf scrape-protection status
+sudo nssec waf scrape-protection disable
+```
+
+See [docs/waf-setup-guide.md](docs/waf-setup-guide.md#api-scrape-protection) for thresholds, exemptions, and per-node/proxy limitations.
+
 ## Server Types
 
 | Component | Core | NDP | Recording | QoS |

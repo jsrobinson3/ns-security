@@ -199,6 +199,10 @@ SECURITY2_CONF_TEMPLATE = """\
     # like 920350/920180 have already fired.)
     IncludeOptional /etc/modsecurity/netsapiens-exclusions.conf
 
+    # API scrape protection ('nssec waf scrape-protection'). Optional: the
+    # file only exists while enabled.
+    IncludeOptional /etc/modsecurity/netsapiens-scrape-protection.conf
+
     # OWASP CRS rules
     IncludeOptional {{ crs_path }}/rules/*.conf
     IncludeOptional {{ crs_path }}/plugins/*-after.conf
@@ -655,3 +659,285 @@ def _exclusions_template_hash() -> str:
 
 
 NS_EXCLUSIONS_HASH = _exclusions_template_hash()
+
+
+# ---------------------------------------------------------------------------
+# API Scrape Protection
+# ---------------------------------------------------------------------------
+
+SCRAPE_CONF = "/etc/modsecurity/netsapiens-scrape-protection.conf"
+
+# detect: log matches only.  block: HTTP 429 over-limit clients (403 for
+# scraper user agents).
+SCRAPE_MODES = ("detect", "block")
+SCRAPE_DEFAULT_MODE = "detect"
+
+# Threshold profiles. Both counters share one fixed window.
+#   window        seconds per counting window
+#   max_requests  /ns-api/ requests allowed per client IP per window
+#   max_domains   distinct tenant domains one client IP may READ per window
+#   block_period  seconds a client stays flagged (blocked in block mode)
+#
+# The domain limit is the primary signal: a harvester walking tenants trips it
+# within seconds, while its request rate can look like an ordinary integration.
+SCRAPE_PROFILES = {
+    "standard": {
+        "window": 600,
+        "max_requests": 3000,
+        "max_domains": 50,
+        "block_period": 1800,
+    },
+    "strict": {
+        "window": 600,
+        "max_requests": 1000,
+        "max_domains": 15,
+        "block_period": 3600,
+    },
+}
+SCRAPE_DEFAULT_PROFILE = "standard"
+
+# Case-insensitive substrings (@pm) of the User-Agent header.
+SCRAPE_BAD_USER_AGENTS = ["harvest/"]
+
+SCRAPE_CONF_TEMPLATE = """\
+# NetSapiens API Scrape Protection
+# Managed by nssec — change with 'nssec waf scrape-protection enable', do not edit by hand.
+# Generated: {{ timestamp }}
+# nssec-scrape-hash: {{ template_hash }}
+# nssec-scrape-settings: {{ settings_json }}
+#
+# Detects bulk harvesting of tenant data through /ns-api/: one client walking
+# every domain reading devices, users, etc. mod_evasive cannot see this — it
+# counts per second and keys on the URI path without the query string, so a
+# steady crawl of /ns-api/?object=device&action=read&domain=<each tenant>
+# never trips it.
+#
+# Mode:     {{ mode }} ({% if mode == "block" %}over-limit clients get HTTP 429{% else %}log only, nothing is blocked{% endif %})
+# Profile:  {{ profile }}
+# Window:   {{ window }}s: max {{ max_requests }} requests, max {{ max_domains }} distinct domains read
+# Flagged:  {{ block_period }}s once over a limit
+#
+# Blocking also requires SecRuleEngine On: under DetectionOnly the deny actions
+# are logged but not enforced.
+#
+# Counters live in ModSecurity persistent collections under SecDataDir, local
+# to this node, so each node enforces its own budget. Behind a reverse proxy or
+# load balancer every client shares the proxy's address unless mod_remoteip is
+# configured; fix that (or exempt the proxy) before switching to block mode.
+#
+# Rule IDs: 1002001-1002099. Every rule except the exemption carries the tag
+# nssec-scrape so the exemption's runtime ctl removes them all; it must load
+# after netsapiens-exclusions.conf and stay first in this file.
+{% set over_limit = "deny,status:429" if mode == "block" else "pass" %}
+
+# ---- Exempt sources ----
+SecRule REMOTE_ADDR "@ipMatch {{ exempt_ips | join(',') }}" \\
+    "id:1002001,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveByTag=nssec-scrape"
+
+{% if bad_user_agents %}
+# ---- Known scraper user agents (all paths) ----
+SecRule REQUEST_HEADERS:User-Agent "@pm {{ bad_user_agents | join(' ') }}" \\
+    "id:1002002,\\
+     phase:1,\\
+     {{ "deny,status:403" if mode == "block" else "pass" }},\\
+     log,\\
+     tag:'nssec-scrape',\\
+     msg:'nssec: known scraper user agent',\\
+     logdata:'%{MATCHED_VAR}'"
+{% endif %}
+
+# ---- Identify /ns-api/ requests and load this client's counters ----
+SecRule REQUEST_FILENAME "@beginsWith /ns-api/" \\
+    "id:1002010,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     t:none,t:urlDecodeUni,t:normalizePath,\\
+     tag:'nssec-scrape',\\
+     initcol:ip=%{REMOTE_ADDR},\\
+     setvar:tx.nssec_api=1"
+
+{% if mode == "block" %}
+# ---- Enforce: flagged clients are refused until the flag expires ----
+SecRule TX:nssec_api "@eq 1" \\
+    "id:1002011,\\
+     phase:1,\\
+     deny,\\
+     status:429,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule IP:nssec_flagged "@eq 1" \\
+        "t:none"
+{% endif %}
+
+# ---- Request budget ----
+# Fixed window: expirevar is issued only when a counter is created. Issuing it
+# on every hit pushes the expiry back each time, turning the window into an
+# idle timeout; a slow but steady integration would then climb past the budget
+# over a few hours.
+SecRule TX:nssec_api "@eq 1" \\
+    "id:1002020,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule &IP:nssec_requests "@eq 0" \\
+        "setvar:ip.nssec_requests=0,\\
+         expirevar:ip.nssec_requests={{ window }}"
+
+SecRule TX:nssec_api "@eq 1" \\
+    "id:1002021,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     setvar:ip.nssec_requests=+1"
+
+# Flagging also serves as de-duplication: each rule logs once per flag period
+# instead of on every request past the limit.
+SecRule IP:nssec_requests "@gt {{ max_requests }}" \\
+    "id:1002022,\\
+     phase:1,\\
+     {{ over_limit }},\\
+     log,\\
+     tag:'nssec-scrape',\\
+     msg:'nssec: ns-api request budget exceeded',\\
+     logdata:'%{ip.nssec_requests} requests in {{ window }}s window',\\
+     setvar:ip.nssec_flagged=1,\\
+     expirevar:ip.nssec_flagged={{ block_period }},\\
+     chain"
+    SecRule &IP:nssec_flagged "@eq 0" \\
+        "t:none"
+
+# ---- Cross-domain enumeration ----
+# Normal API clients work inside one tenant or a handful. Reading many distinct
+# tenant domains in a short window is the bulk-harvest signature.
+#
+# Tenant domain named by the request: the v1 "domain" argument (query string or
+# form body) or the v2 /ns-api/v2/domains/<domain>/ path segment. The character
+# class bounds what reaches a collection key.
+SecRule TX:nssec_api "@eq 1" \\
+    "id:1002030,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule ARGS:domain "@rx ^([a-z0-9][a-z0-9._-]{0,127})$" \\
+        "t:none,t:lowercase,\\
+         capture,\\
+         setvar:tx.nssec_domain=%{tx.1}"
+
+SecRule TX:nssec_api "@eq 1" \\
+    "id:1002031,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/+ns-api/v2/domains/([a-z0-9][a-z0-9._-]{0,127})(?:/|$)" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         capture,\\
+         setvar:tx.nssec_domain=%{tx.1}"
+
+# Only reads count: provisioning across tenants is a normal reseller workflow,
+# reading across them is how data leaves. v1 names the operation in "action";
+# requests without one (v2) are classified by method.
+SecRule &TX:nssec_domain "@eq 1" \\
+    "id:1002032,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule ARGS:action "@rx ^(?:read|count|list)$" \\
+        "t:none,t:lowercase,\\
+         setvar:tx.nssec_read=1"
+
+SecRule &TX:nssec_domain "@eq 1" \\
+    "id:1002033,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule &ARGS:action "@eq 0" \\
+        "chain"
+        SecRule REQUEST_METHOD "@streq GET" \\
+            "setvar:tx.nssec_read=1"
+
+# One RESOURCE record per (client, domain) marks that domain as already counted
+# for the window, so re-reading the same tenant costs nothing. Made-up domain
+# names count as distinct domains too, so a client inflating the key space
+# trips the limit itself. (The seen-marker and the IP counter start their
+# windows at different times, which can only under-count, never over-count.)
+SecRule TX:nssec_read "@eq 1" \\
+    "id:1002040,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     initcol:resource=nssec_%{REMOTE_ADDR}_%{tx.nssec_domain},\\
+     setvar:tx.nssec_resource=1"
+
+SecRule TX:nssec_resource "@eq 1" \\
+    "id:1002041,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule &RESOURCE:nssec_seen "@eq 0" \\
+        "setvar:resource.nssec_seen=1,\\
+         expirevar:resource.nssec_seen={{ window }},\\
+         setvar:tx.nssec_new_domain=1"
+
+SecRule TX:nssec_new_domain "@eq 1" \\
+    "id:1002042,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     chain"
+    SecRule &IP:nssec_domains "@eq 0" \\
+        "setvar:ip.nssec_domains=0,\\
+         expirevar:ip.nssec_domains={{ window }}"
+
+SecRule TX:nssec_new_domain "@eq 1" \\
+    "id:1002043,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-scrape',\\
+     setvar:ip.nssec_domains=+1"
+
+SecRule IP:nssec_domains "@gt {{ max_domains }}" \\
+    "id:1002044,\\
+     phase:2,\\
+     {{ over_limit }},\\
+     log,\\
+     tag:'nssec-scrape',\\
+     msg:'nssec: ns-api cross-domain enumeration',\\
+     logdata:'%{ip.nssec_domains} distinct domains read in {{ window }}s window (latest: %{tx.nssec_domain})',\\
+     setvar:ip.nssec_flagged=1,\\
+     expirevar:ip.nssec_flagged={{ block_period }},\\
+     chain"
+    SecRule &IP:nssec_flagged "@eq 0" \\
+        "t:none"
+"""
+
+
+def _scrape_template_hash() -> str:
+    """MD5 of SCRAPE_CONF_TEMPLATE, embedded in deployed files for drift detection."""
+    import hashlib
+
+    return hashlib.md5(SCRAPE_CONF_TEMPLATE.encode()).hexdigest()[:12]
+
+
+SCRAPE_TEMPLATE_HASH = _scrape_template_hash()

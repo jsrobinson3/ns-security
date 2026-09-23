@@ -19,6 +19,7 @@ from nssec.modules.waf.config import (
     SECURITY2_CONF,
     SECURITY2_LOAD,
 )
+from nssec.modules.waf.scrape import get_scrape_status
 
 
 @dataclass
@@ -48,6 +49,10 @@ class WafStatus:
     disabled_crs_rules: int = 0
     audit_log_exists: bool = False
     recent_log_lines: list[str] = field(default_factory=list)
+    scrape_deployed: bool = False
+    scrape_included: bool = False
+    scrape_current: bool = False
+    scrape_mode: str | None = None
 
 
 def _pkg_installed(package: str) -> bool:
@@ -224,6 +229,12 @@ def get_waf_status() -> WafStatus:
 
     status.evasive_installed = _pkg_installed(EVASIVE_PACKAGE)
     status.evasive_enabled = Path(EVASIVE_LOAD).exists()
+
+    scrape = get_scrape_status()
+    status.scrape_deployed = scrape.deployed
+    status.scrape_included = scrape.included
+    status.scrape_current = scrape.current
+    status.scrape_mode = scrape.settings.mode if scrape.settings else None
 
     # Parse exclusions file
     status.exclusions_present = Path(NS_EXCLUSIONS_CONF).exists()

@@ -169,6 +169,19 @@ def _build_status_table(status):
     else:
         table.add_row("mod_evasive", "[dim]not installed[/dim]")
 
+    fix_scrape = "run [cyan]nssec waf scrape-protection enable[/cyan]"
+    if not status.scrape_deployed:
+        scrape_val = "[dim]not deployed[/dim]"
+    elif not status.scrape_included:
+        scrape_val = f"[red]not loaded[/red] — {fix_scrape}"
+    elif not status.scrape_current:
+        scrape_val = f"[yellow]outdated ({status.scrape_mode or 'unknown'})[/yellow] — {fix_scrape}"
+    elif status.scrape_mode == "block":
+        scrape_val = "[green]block[/green]"
+    else:
+        scrape_val = "[yellow]detect (log only)[/yellow]"
+    table.add_row("API scrape protection", scrape_val)
+
     # NS exclusions detail
     if status.exclusions_present:
         if not status.exclusions_included:
@@ -1246,3 +1259,288 @@ def waf_restrict_reapply(dry_run, yes):
 
     if any_changed:
         _validate_and_prompt_reload_for_restrict(yes)
+
+
+# ─── SCRAPE PROTECTION SUBCOMMANDS ───
+
+
+def _merge_unique(existing, extra):
+    """Append items from *extra* that are not already in *existing*, keeping order."""
+    merged = list(existing)
+    for item in extra:
+        if item not in merged:
+            merged.append(item)
+    return merged
+
+
+def _print_scrape_settings(settings, exempt_ips=None):
+    """Print the scrape protection settings table."""
+    thresholds = settings.thresholds()
+
+    def _limit(name):
+        value = str(thresholds[name])
+        return f"{value} (override)" if getattr(settings, name) is not None else value
+
+    table = Table(show_header=False, padding=(0, 2))
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value")
+    if settings.mode == "block":
+        table.add_row("Mode", "[red]block[/red] (HTTP 429 over limit)")
+    else:
+        table.add_row("Mode", "[yellow]detect[/yellow] (log only)")
+    table.add_row("Profile", settings.profile)
+    table.add_row("Window", f"{thresholds['window']}s")
+    table.add_row("Max requests / IP", _limit("max_requests"))
+    table.add_row("Max domains read / IP", _limit("max_domains"))
+    table.add_row("Flag duration", f"{thresholds['block_period']}s")
+    table.add_row("Scraper user agents", ", ".join(settings.bad_user_agents) or "[dim]none[/dim]")
+    table.add_row("Admin allowlist exempt", _yn(settings.exempt_admin_ips, "yellow"))
+    table.add_row("Extra exempt IPs", ", ".join(settings.exempt_ips) or "[dim]none[/dim]")
+    if exempt_ips is not None:
+        table.add_row("Effective exemptions", ", ".join(exempt_ips))
+    console.print(table)
+
+
+@waf.group("scrape-protection", invoke_without_command=True)
+@click.pass_context
+def waf_scrape(ctx):
+    """Detect or block bulk data harvesting from /ns-api/."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(waf_scrape_status)
+
+
+@waf_scrape.command("enable")
+@click.option(
+    "--mode",
+    type=click.Choice(["detect", "block"]),
+    default=None,
+    help="detect logs only; block returns HTTP 429. Default: keep deployed, else detect.",
+)
+@click.option(
+    "--profile",
+    type=click.Choice(["standard", "strict"]),
+    default=None,
+    help="Threshold profile. Default: keep deployed, else standard.",
+)
+@click.option(
+    "--max-domains",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Override: distinct tenant domains one IP may read per window.",
+)
+@click.option(
+    "--max-requests",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Override: /ns-api/ requests per IP per window.",
+)
+@click.option(
+    "--clear-overrides", is_flag=True, help="Drop --max-domains/--max-requests overrides."
+)
+@click.option("--exempt-ip", "add_exempt", multiple=True, help="IP/CIDR to exempt (repeatable).")
+@click.option(
+    "--remove-exempt-ip",
+    "remove_exempt",
+    multiple=True,
+    help="Previously exempted IP/CIDR to drop (repeatable).",
+)
+@click.option(
+    "--exempt-admin-ips/--no-exempt-admin-ips",
+    default=None,
+    help="Whether WAF allowlist IPs are exempt. Default: keep deployed, else yes.",
+)
+@click.option(
+    "--block-user-agent",
+    "add_user_agents",
+    multiple=True,
+    help="Extra User-Agent substring to flag (repeatable).",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_scrape_enable(
+    mode,
+    profile,
+    max_domains,
+    max_requests,
+    clear_overrides,
+    add_exempt,
+    remove_exempt,
+    exempt_admin_ips,
+    add_user_agents,
+    dry_run,
+    yes,
+):
+    """Deploy or update API scrape protection.
+
+    \b
+    Tracks each client IP on /ns-api/ and flags:
+      - known scraper User-Agents
+      - more requests per window than the budget allows
+      - reads across more distinct tenant domains than allowed
+
+    Settings persist between runs, so pass only what changes, e.g.
+    'enable --mode block' once detections look right. Start in detect mode
+    and review 'nssec:' matches in the Apache error log first.
+    """
+    from nssec.modules.waf import ModSecurityInstaller, get_allowlisted_ips, scrape
+
+    installer = ModSecurityInstaller(dry_run=dry_run)
+    pf = installer.preflight()
+    _require_root_and_modsec(pf, "waf scrape-protection enable")
+
+    settings = scrape.load_deployed_settings() or scrape.ScrapeSettings()
+    if mode:
+        settings.mode = mode
+    if profile:
+        settings.profile = profile
+    if clear_overrides:
+        settings.max_domains = None
+        settings.max_requests = None
+    if max_domains is not None:
+        settings.max_domains = max_domains
+    if max_requests is not None:
+        settings.max_requests = max_requests
+    if exempt_admin_ips is not None:
+        settings.exempt_admin_ips = exempt_admin_ips
+    settings.exempt_ips = [
+        ip for ip in _merge_unique(settings.exempt_ips, add_exempt) if ip not in remove_exempt
+    ]
+    settings.bad_user_agents = _merge_unique(settings.bad_user_agents, add_user_agents)
+
+    errors = scrape.validate_settings(settings)
+    if errors:
+        for err in errors:
+            console.print(f"[red]Error:[/red] {err}")
+        raise SystemExit(1)
+
+    exempt_ips = scrape.resolve_exempt_ips(settings, get_allowlisted_ips(), scrape.get_local_ips())
+
+    console.print("[bold]API scrape protection[/bold]\n")
+    _print_scrape_settings(settings, exempt_ips)
+    console.print()
+    if settings.mode == "block" and (pf.modsec_mode or "").lower() != "on":
+        console.print(
+            f"[yellow]Warning:[/yellow] SecRuleEngine is {pf.modsec_mode or 'not configured'}; "
+            "block-mode denies are only logged until [cyan]nssec waf enable[/cyan]."
+        )
+    console.print(
+        "[dim]Behind a proxy or load balancer, configure mod_remoteip first "
+        "or every client shares one address.[/dim]"
+    )
+    console.print()
+
+    if not dry_run and not yes and not click.confirm("Apply scrape protection?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    conf_existed = scrape.is_deployed()
+    include = scrape.ensure_security2_include(dry_run=dry_run)
+    if not include.success:
+        console.print(f"  [red]Error:[/red] {include.error}")
+        raise SystemExit(1)
+    if include.skipped:
+        console.print(f"  [dim]Skipped:[/dim] {include.message}")
+    else:
+        console.print(f"  [green]Done:[/green] {include.message}")
+    security2_changed = not include.skipped and not dry_run
+
+    written = scrape.write_scrape_conf(settings, exempt_ips, dry_run=dry_run)
+    if not written.success:
+        console.print(f"  [red]Error:[/red] {written.error}")
+        if not dry_run:
+            scrape.rollback_scrape(conf_existed=conf_existed, security2_changed=security2_changed)
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {written.message}")
+
+    if dry_run:
+        console.print("\n[yellow]Dry run — no changes made.[/yellow]")
+        return
+
+    validated = scrape.validate_apache_config(
+        conf_existed=conf_existed, security2_changed=security2_changed
+    )
+    if not validated.success:
+        console.print(f"  [red]Error:[/red] {validated.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {validated.message}")
+
+    _prompt_and_reload_apache(installer, yes)
+
+    console.print("\nReview detections with:")
+    console.print("  [cyan]grep 'nssec: ' /var/log/apache2/error.log[/cyan]")
+
+
+@waf_scrape.command("disable")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def waf_scrape_disable(dry_run, yes):
+    """Remove the API scrape protection rules.
+
+    Deployed settings are discarded (a .bak.nssec copy is kept). The
+    security2.conf IncludeOptional line stays and is harmless without the file.
+    """
+    from nssec.modules.waf import ModSecurityInstaller, scrape
+
+    installer = ModSecurityInstaller(dry_run=dry_run)
+    pf = installer.preflight()
+    _require_root_and_modsec(pf, "waf scrape-protection disable")
+
+    if not scrape.is_deployed():
+        console.print("[green]Scrape protection is not deployed.[/green]")
+        return
+
+    if not dry_run and not yes and not click.confirm("Remove API scrape protection rules?"):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    removed = scrape.remove_scrape_conf(dry_run=dry_run)
+    if not removed.success:
+        console.print(f"  [red]Error:[/red] {removed.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {removed.message}")
+
+    if dry_run:
+        console.print("\n[yellow]Dry run — no changes made.[/yellow]")
+        return
+
+    validated = scrape.validate_apache_config(conf_existed=True, security2_changed=False)
+    if not validated.success:
+        console.print(f"  [red]Error:[/red] {validated.error}")
+        raise SystemExit(1)
+    console.print(f"  [green]Done:[/green] {validated.message}")
+
+    _prompt_and_reload_apache(installer, yes)
+
+
+@waf_scrape.command("status")
+def waf_scrape_status():
+    """Show API scrape protection status."""
+    from nssec.modules.waf import scrape
+    from nssec.modules.waf.config import SCRAPE_CONF
+
+    status = scrape.get_scrape_status()
+    enable_hint = sudo_hint("waf scrape-protection enable")
+
+    console.print("[bold]API Scrape Protection Status[/bold]\n")
+    if not status.deployed:
+        console.print("  Status:   [yellow]not deployed[/yellow]")
+        console.print(f"\n  Start in detect mode with: [cyan]{enable_hint}[/cyan]")
+        return
+
+    console.print(f"  Status:   [green]deployed[/green] ({SCRAPE_CONF})")
+    loaded = _yn(status.included)
+    if not status.included:
+        loaded += f" — run [cyan]{enable_hint}[/cyan]"
+    console.print(f"  Loaded:   {loaded}")
+    current = _yn(status.current, "yellow")
+    if not status.current:
+        current += f" — template changed, re-run [cyan]{enable_hint}[/cyan]"
+    console.print(f"  Current:  {current}")
+    console.print()
+
+    if status.settings:
+        _print_scrape_settings(status.settings)
+    else:
+        console.print("  [yellow]Settings header missing or unreadable.[/yellow]")
+
+    console.print("\n  Detections: [cyan]grep 'nssec: ' /var/log/apache2/error.log[/cyan]")
