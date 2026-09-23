@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,24 @@ from pathlib import Path
 from jinja2 import Template
 
 from nssec.core import ssh
-from nssec.modules.waf.config import BACKUP_SUFFIX, SECURITY2_CONF
+from nssec.modules.waf.config import (
+    BACKUP_SUFFIX,
+    EXCLUSION_TOGGLE_DEFAULTS,
+    SECURITY2_CONF,
+)
+
+
+def parse_exclusion_toggles(content: str) -> dict[str, bool]:
+    """Read the "# nssec-toggle: name=on|off" header lines of an exclusions file.
+
+    Every known toggle is returned; one without a header line (a file written
+    before the toggle existed) gets its default.
+    """
+    toggles = dict(EXCLUSION_TOGGLE_DEFAULTS)
+    for name, value in re.findall(r"^# nssec-toggle: (\w+)=(on|off)$", content, re.MULTILINE):
+        if name in toggles:
+            toggles[name] = value == "on"
+    return toggles
 
 
 def run_cmd(cmd: list[str], timeout: int = 120) -> tuple[str, str, int]:
@@ -67,6 +85,24 @@ def remove_file(path: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def snapshot_files(paths: list[str]) -> dict[str, str | None]:
+    """Current contents of each path (None if absent), for restore_snapshot.
+
+    Unlike backup_file, which keeps only the pre-nssec original, this captures
+    the state right before a write so a failed configtest undoes just that
+    write.
+    """
+    return {path: read_file(path) if file_exists(path) else None for path in paths}
+
+
+def restore_snapshot(snapshot: dict[str, str | None]) -> bool:
+    """Put every file in a snapshot back as it was.  True if all succeeded."""
+    ok = True
+    for path, content in snapshot.items():
+        ok = (remove_file(path) if content is None else write_file(path, content)) and ok
+    return ok
 
 
 def render(template_str: str, **kwargs: object) -> str:

@@ -58,3 +58,23 @@ def cli_runner():
     from click.testing import CliRunner
 
     return CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def isolate_cluster_paths(tmp_path):
+    """Keep every test away from the host's real SBUS config and caches.
+
+    On an SBUS host the real sbus.ini would make cluster discovery reach the
+    network, and a real cache or restrict config would leak into renders.
+    """
+    from contextlib import ExitStack
+
+    targets = {
+        "nssec.core.cluster.SBUS_INI_PATH": tmp_path / "sbus.ini",
+        "nssec.core.cluster.CLUSTER_CACHE_PATH": tmp_path / "cluster-peers.json",
+        "nssec.modules.waf.restrict.RESTRICT_CONF_PATH": tmp_path / "nssec-restrict.conf",
+    }
+    with ExitStack() as stack:
+        for target, path in targets.items():
+            stack.enter_context(patch(target, str(path)))
+        yield tmp_path

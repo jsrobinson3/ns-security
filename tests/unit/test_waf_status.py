@@ -1,7 +1,5 @@
 """Tests for WAF status reporting."""
 
-from jinja2 import Template
-
 
 class TestParseExclusionsMeta:
     """Tests for _parse_exclusions_meta."""
@@ -80,20 +78,15 @@ class TestExclusionsHashDrift:
     """Tests for template hash drift detection."""
 
     def test_matching_hash_means_current(self):
-        from nssec.modules.waf.config import (
-            NS_EXCLUSIONS_HASH,
-            NS_EXCLUSIONS_TEMPLATE,
-            NS_EXCLUSIONS_VERSION,
-        )
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS, NS_EXCLUSIONS_HASH
         from nssec.modules.waf.status import _parse_exclusions_meta
 
         # Render the template with the current hash
-        rendered = Template(NS_EXCLUSIONS_TEMPLATE).render(
-            timestamp="test",
+        rendered = render_exclusions(
             admin_ips=[],
             nodeping_ips=[],
-            version=NS_EXCLUSIONS_VERSION,
-            template_hash=NS_EXCLUSIONS_HASH,
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
         )
         _, deployed_hash, _, _ = _parse_exclusions_meta(rendered)
         assert deployed_hash == NS_EXCLUSIONS_HASH

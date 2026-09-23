@@ -6,9 +6,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nssec.modules.waf.cluster import cached_cluster_peers, deployed_evasive_peers, evasive_drift
 from nssec.modules.waf.config import (
     CRS_RULES_REQUIRE_296,
     CRS_SEARCH_PATHS,
+    EVASIVE_CONF,
     EVASIVE_LOAD,
     EVASIVE_PACKAGE,
     MODSEC_AUDIT_LOG,
@@ -19,6 +21,7 @@ from nssec.modules.waf.config import (
     SECURITY2_CONF,
     SECURITY2_LOAD,
 )
+from nssec.modules.waf.utils import parse_exclusion_toggles
 
 
 @dataclass
@@ -44,6 +47,13 @@ class WafStatus:
     crs_path_valid: bool = False
     exclusions_admin_ips: int = 0
     exclusions_nodeping_ips: int = 0
+    exclusions_toggles: dict[str, bool] = field(default_factory=dict)
+    cluster_peer_count: int = 0
+    cluster_ipv6_count: int = 0
+    cluster_manifest_url: str = ""
+    cluster_discovered_at: str = ""
+    cluster_evasive_count: int = 0
+    cluster_drift: list[str] = field(default_factory=list)
     modsec_version: str | None = None
     disabled_crs_rules: int = 0
     audit_log_exists: bool = False
@@ -236,6 +246,19 @@ def get_waf_status() -> WafStatus:
             status.exclusions_current = deployed_hash == NS_EXCLUSIONS_HASH
             status.exclusions_admin_ips = admin_count
             status.exclusions_nodeping_ips = np_count
+            status.exclusions_toggles = parse_exclusion_toggles(excl_content)
+
+    # Cluster peers: cached discovery vs what evasive.conf actually lists
+    cluster = cached_cluster_peers(read=_read_file)
+    if cluster.peers:
+        evasive_content = _read_file(EVASIVE_CONF) or ""
+        status.cluster_peer_count = len(cluster.peers)
+        status.cluster_ipv6_count = len(cluster.ipv6)
+        status.cluster_manifest_url = cluster.manifest_url
+        status.cluster_discovered_at = cluster.discovered_at
+        status.cluster_evasive_count = len(deployed_evasive_peers(evasive_content))
+        if evasive_content:
+            status.cluster_drift = evasive_drift(cluster, evasive_content)
 
     status.audit_log_exists = Path(MODSEC_AUDIT_LOG).exists()
     if status.audit_log_exists:
