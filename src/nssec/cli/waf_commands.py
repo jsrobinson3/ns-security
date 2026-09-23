@@ -790,17 +790,37 @@ def waf_allowlist(ctx):
 
 @waf_allowlist.command("show")
 def waf_allowlist_show():
-    """Show current allowlisted IPs."""
-    from nssec.modules.waf import get_allowlisted_ips
+    """Show every IP with reduced WAF strictness: admin, cluster peers, NodePing."""
+    from nssec.modules.waf import get_allowlisted_ips, get_nodeping_ips
+    from nssec.modules.waf.cluster import deployed_exclusions_peers
 
     ips = get_allowlisted_ips()
-    if not ips:
+    if ips:
+        console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})")
+        for ip in ips:
+            console.print(f"  {ip}")
+    else:
         console.print("[dim]No IPs currently allowlisted.[/dim]")
-        return
+    console.print("  [dim]Manage with: nssec waf allowlist add|delete[/dim]")
 
-    console.print(f"[bold]Allowlisted IPs[/bold] ({len(ips)})\n")
-    for ip in ips:
-        console.print(f"  {ip}")
+    peers = deployed_exclusions_peers()
+    console.print()
+    if peers:
+        console.print(f"[bold]Cluster peers[/bold] ({len(peers)})")
+        width = max(len(ip) for ip in peers)
+        for ip, host in peers.items():
+            console.print(f"  {ip.ljust(width)}  [dim]{host}[/dim]")
+    else:
+        console.print("[dim]No cluster peers deployed.[/dim]")
+    console.print("  [dim]Managed from the SBUS manifest: nssec waf cluster show|refresh[/dim]")
+
+    nodeping = get_nodeping_ips()
+    console.print()
+    console.print(f"[bold]NodePing probes[/bold] ({len(nodeping)})")
+    console.print("  [dim]Refreshed by: nssec waf update-exclusions[/dim]")
+
+    console.print()
+    console.print("[dim]Localhost (127.0.0.1, ::1) is always allowlisted.[/dim]")
 
 
 @waf_allowlist.command("add")
@@ -868,6 +888,19 @@ def waf_allowlist_delete(ip, yes):
     ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip not in current_ips:
+        from nssec.modules.waf.cluster import deployed_exclusions_peers
+
+        peers = deployed_exclusions_peers()
+        if ip in peers:
+            console.print(
+                f"[yellow]{ip} is a cluster peer ({peers[ip]}), not a manual allowlist "
+                "entry.[/yellow]"
+            )
+            console.print(
+                "Cluster peers come from the SBUS manifest; to leave a host out run "
+                "[cyan]nssec waf cluster refresh --exclude-host PATTERN[/cyan]."
+            )
+            return
         console.print(f"[yellow]IP {ip} is not in the allowlist.[/yellow]")
         if current_ips:
             console.print("\nCurrent allowlisted IPs:")
