@@ -353,6 +353,21 @@ def _build_status_table(status):
             "Cluster peers",
             "[yellow]none cached[/yellow] — run [cyan]nssec waf cluster refresh[/cyan]",
         )
+
+    if status.evasive_allowlist_expected or status.evasive_allowlist_count:
+        expand = " (expand-cidr on)" if status.evasive_expand_cidr else ""
+        if status.evasive_allowlist_count < status.evasive_allowlist_expected:
+            value = (
+                f"[yellow]{status.evasive_allowlist_count} of "
+                f"{status.evasive_allowlist_expected} in mod_evasive[/yellow]{expand} — "
+                "run [cyan]nssec waf evasive enable[/cyan]"
+            )
+        else:
+            value = f"[green]{status.evasive_allowlist_count} in mod_evasive[/green]{expand}"
+        table.add_row("Allowlist in evasive", value)
+    for warning in status.evasive_allowlist_warnings:
+        table.add_row("  [yellow]Not whitelisted[/yellow]", f"[yellow]{warning}[/yellow]")
+
     table.add_row("Audit log", _yn(status.audit_log_exists, "dim"))
     return table
 
@@ -945,7 +960,16 @@ def waf_evasive(ctx):
     default="standard",
     help="Threshold profile: standard (safe default) or strict (tuned for NS traffic)",
 )
-def waf_evasive_enable(yes, profile):
+@click.option(
+    "--expand-cidr/--no-expand-cidr",
+    "expand_cidr",
+    default=None,
+    help=(
+        "Write allowlisted ranges that have no DOSWhitelist wildcard (e.g. a /27) "
+        "out address by address. Default: keep whatever the deployed config recorded."
+    ),
+)
+def waf_evasive_enable(yes, profile, expand_cidr):
     """Enable mod_evasive HTTP flood protection.
 
     mod_evasive has NO detection-only mode — it WILL block IPs that exceed
@@ -996,11 +1020,18 @@ def waf_evasive_enable(yes, profile):
         console.print("[yellow]Aborted.[/yellow]")
         return
 
-    config_result = installer.setup_evasive_config(profile=profile)
+    config_result = installer.setup_evasive_config(profile=profile, expand_cidr=expand_cidr)
     if not config_result.success and not config_result.skipped:
         console.print(f"[red]Error: {config_result.error}[/red]")
         raise SystemExit(1)
     console.print(f"  [green]Done:[/green] {config_result.message}")
+    for warning in config_result.warnings:
+        console.print(f"  [yellow]Warning:[/yellow] {warning}")
+    if config_result.warnings and expand_cidr is not True:
+        console.print(
+            "  Re-run with [cyan]--expand-cidr[/cyan] to write those ranges out "
+            "address by address."
+        )
 
     result = installer.set_evasive_state(enable=True)
     if result.skipped:

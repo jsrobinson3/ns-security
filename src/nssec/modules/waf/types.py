@@ -13,6 +13,10 @@ class StepResult:
     skipped: bool = False
     message: str = ""
     error: str = ""
+    # Non-fatal notes for the operator: the step succeeded, but something it
+    # was asked to do could not be done in full (e.g. an allowlist entry with
+    # no DOSWhitelist equivalent).
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
