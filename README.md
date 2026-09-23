@@ -246,7 +246,7 @@ sudo nssec waf evasive disable
 | `strict` | 15 req/page/s | 60 req/IP/s | 60s | Tuned for NetSapiens traffic patterns |
 
 Start with `standard` and review the Apache API Usage dashboard and mod_evasive block logs before switching to `strict`. Block events are logged to `/var/log/apache2/mod_evasive.log` for Loki/Grafana ingestion.
-
+s just emp
 ### Cluster peers (SBUS)
 
 Cluster members deliver SBUS events to each other over HTTP, usually from

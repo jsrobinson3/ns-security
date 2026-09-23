@@ -711,6 +711,7 @@ class TestSanitiseArgExclusion:
             "auth_code",
             "nsToken",
             "ns_t",
+            "passcode",
         ):
             assert f"sanitiseArg:{name}" in block
 

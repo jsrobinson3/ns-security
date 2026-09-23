@@ -276,10 +276,13 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # Masking is by argument NAME, so `password` is caught on every endpoint that
 # uses it, not just the token endpoint. This is non-disruptive and never blocks.
 #
-# Scope note: this only covers the ModSecurity audit log. The Apache access_log
-# records the request line (%r) independently and still stores query-string
-# secrets in cleartext — that needs a separate LogFormat/SetEnvIf fix in the
-# vhost, outside nssec's control.
+# Scope note: ModSecurity 2.9 masks the arguments in place while it writes an
+# audit-log entry, and Apache writes the access_log (%r) afterwards, so the
+# access_log line is masked too -- but only for requests that get an audit-log
+# entry (relevant status, a matched rule with auditlog, or token audit on).
+# Every other request still stores query-string secrets in the access_log in
+# cleartext; a guaranteed fix needs a LogFormat/SetEnvIf change in the vhost,
+# outside nssec's control.
 #
 # `ctl:sanitiseArg` does not exist in ModSecurity 2.x (not in the ctl option
 # list), so this is an unconditional SecAction. phase:2 matches the documented
@@ -296,7 +299,8 @@ SecAction \\
      sanitiseArg:access_token,\\
      sanitiseArg:auth_code,\\
      sanitiseArg:nsToken,\\
-     sanitiseArg:ns_t"
+     sanitiseArg:ns_t,\\
+     sanitiseArg:passcode"
 
 # ---- Admin UI form submissions and third-party tracking cookies ----
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
