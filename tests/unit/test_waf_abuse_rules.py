@@ -16,7 +16,7 @@ from nssec.modules.waf import render_exclusions
 from nssec.modules.waf.config import ABUSE_LIMITS, EXCLUSION_TOGGLE_DEFAULTS
 from nssec.modules.waf.utils import parse_exclusion_toggles
 
-DEVICE_WALK_IDS = range(1000340, 1000354)
+DEVICE_WALK_IDS = range(1000339, 1000354)
 
 
 def _render(admin_ips=(), nodeping_ips=(), **toggles):
@@ -196,15 +196,114 @@ class TestDeviceWalk:
         assert "initcol:" not in rendered
 
 
+def _v2_device_regex(rendered):
+    block = _block(rendered, 1000339)
+    pattern = re.search(r'SecRule REQUEST_FILENAME "@rx ([^"]+)"', block).group(1)
+    return re.compile(pattern)
+
+
+class TestV2DeviceReads:
+    """v2 REST device reads get the same protection as v1 object=device reads."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/ns-api/v2/domains/example.com/devices",
+            "/ns-api/v2/domains/example.com/devices/",
+            "/ns-api/v2/domains/example.com/devices/count",
+            "/ns-api/v2/domains/example.com/devices/1000a/count",
+            "/ns-api/v2/domains/example.com/users/1000/devices",
+            "/ns-api/v2/domains/example.com/users/1000/devices/count",
+            "/ns-api/v2/domains/example.com/users/1000/devices/1000a",
+            "/ns-api/v2/domains/~/devices",
+            "/ns-api/v2/domains/*/devices",
+        ],
+    )
+    def test_device_reads_and_counts_match(self, path):
+        """Counts are included: fetching the count usually precedes the pull."""
+        assert _v2_device_regex(_render()).search(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/ns-api/v2/domains/example.com/users",
+            "/ns-api/v2/deviceprofiles",
+            "/ns-api/v2/domains/example.com/connections",
+        ],
+    )
+    def test_other_endpoints_do_not_match(self, path):
+        assert not _v2_device_regex(_render()).search(path)
+
+    def test_reseller_count_detected_without_domain(self):
+        block = _block(_render(), 1000335)
+        assert "^/ns-api/v2/resellers/[^/]+/devices/count/?$" in block
+        assert "setvar:tx.nssec_device_read=1" in block
+        # "*" fails the domain check, so it is recorded as an unknown domain
+        assert "setvar:tx.nssec_v2_domain=*" in block
+
+    def test_get_and_head_only(self):
+        block = _block(_render(), 1000339)
+        assert 'SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$"' in block
+
+    def test_path_domain_captured_case_and_encoding_normalised(self):
+        block = _block(_render(), 1000339)
+        assert "t:urlDecodeUni,t:lowercase" in block
+        assert "setvar:'tx.nssec_v2_domain=%{TX.1}'" in block
+        assert "setvar:tx.nssec_device_read=1" in block
+
+    def test_path_domain_counted_like_v1_domain(self):
+        rendered = _render()
+        assert "SecRule ARGS:domain|TX:nssec_v2_domain" in _block(rendered, 1000342)
+        assert "SecRule ARGS:domain|TX:nssec_v2_domain" in _block(rendered, 1000343)
+
+    def test_enabled_by_either_toggle(self):
+        only = _render(device_walk=False, device_read_allowlist_only=True)
+        assert '"id:1000339,' in only
+        assert "initcol:user=" not in only
+        assert '"id:1000339,' not in _render(device_walk=False)
+
+
 class TestDeviceReadAllowlistOnly:
     def test_off_by_default(self):
         assert '"id:1000360,' not in _render()
 
-    def test_denies_every_v1_device_read(self):
+    def test_denies_only_bulk_reads(self):
         block = _block(_render(device_read_allowlist_only=True), 1000360)
-        assert 'TX:nssec_device_read "@eq 1"' in block
+        assert 'TX:nssec_device_bulk "@eq 1"' in block
         assert "deny" in block
         assert "status:403" in block
+
+    def test_v1_read_scoped_only_by_a_real_user_or_device(self):
+        """Empty or wildcard user=/device= must not make a bulk read look scoped."""
+        rendered = _render(device_read_allowlist_only=True)
+        scope = _block(rendered, 1000336)
+        assert '&TX:nssec_v2_domain "@eq 0"' in scope
+        pattern = re.search(r'ARGS:user\|ARGS:device "@rx ([^"]+)"', scope).group(1)
+        for value in ("1000", "1000a", "user@example.com"):
+            assert re.search(pattern, value)
+        for value in ("", "*", "%", "a b"):
+            assert not re.search(pattern, value)
+        assert '&TX:nssec_device_scoped "@eq 0"' in _block(rendered, 1000337)
+        assert "setvar:tx.nssec_device_bulk=1" in _block(rendered, 1000337)
+
+    @pytest.mark.parametrize(
+        "path, bulk",
+        [
+            ("/ns-api/v2/domains/example.com/devices", True),
+            ("/ns-api/v2/domains/example.com/devices/", True),
+            ("/ns-api/v2/domains/example.com/devices/count", True),
+            ("/ns-api/v2/resellers/r1/devices/count", True),
+            ("/ns-api/v2/domains/example.com/users/*/devices", True),
+            ("/ns-api/v2/domains/example.com/users/1000/devices", False),
+            ("/ns-api/v2/domains/example.com/users/1000/devices/count", False),
+            ("/ns-api/v2/domains/example.com/users/1000/devices/1000a", False),
+            ("/ns-api/v2/domains/example.com/devices/1000a/count", False),
+        ],
+    )
+    def test_v2_bulk_paths(self, path, bulk):
+        block = _block(_render(device_read_allowlist_only=True), 1000338)
+        pattern = re.search(r'SecRule REQUEST_FILENAME "@rx ([^"]+)"', block).group(1)
+        assert bool(re.search(pattern, path)) is bulk
 
     def test_allowlisted_sources_exempt(self):
         """Tag nssec-abuse is removed by localhost/admin/NodePing/cluster rules."""
@@ -218,6 +317,7 @@ class TestDeviceReadAllowlistOnly:
     def test_works_with_walk_limits_off(self):
         rendered = _render(device_read_allowlist_only=True, device_walk=False)
         assert '"id:1000340,' in rendered  # device-read detection
+        assert '"id:1000339,' in rendered
         assert '"id:1000360,' in rendered
         assert '"id:1000341,' not in rendered
         assert "initcol:user=" not in rendered

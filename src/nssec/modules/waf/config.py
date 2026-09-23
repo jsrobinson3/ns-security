@@ -88,7 +88,7 @@ EXCLUSION_TOGGLE_DEFAULTS = {
 # Abuse-protection limits (seconds unless noted).  Applies per client IP;
 # allowlisted admin/NodePing IPs and localhost are exempt.
 ABUSE_LIMITS = {
-    # v1 API device walking: reading devices (which carry SIP credentials)
+    # Device walking (v1 and v2 API): reading devices (which carry SIP credentials)
     # across many tenant domains is credential harvesting.
     "max_domains": 2,  # distinct domains before a short block...
     "domain_window": 300,  # ...within this window
@@ -623,16 +623,26 @@ SecRule RESOURCE:ua_ban "@eq 1" \\
 {% endif %}
 {% if toggles.device_walk or toggles.device_read_allowlist_only %}
 
-# ---- v1 API device walking ----
-# GET/POST /ns-api/?object=device&action=read returns device records, SIP
-# passwords included.  A scraper walks tenant after tenant reading devices;
+# ---- Device walking (v1 and v2 API) ----
+# Device records include SIP registration and provisioning passwords.  They
+# are read with:
+#   v1  GET/POST /ns-api/?object=device&action=read   (domain in domain=)
+#   v2  GET /ns-api/v2/domains/{domain}/devices
+#       GET /ns-api/v2/domains/{domain}/users/{user}/devices[/{device}]
+#                                                     (domain in the path)
+#       GET .../devices/count, .../devices/{device}/count and
+#           /ns-api/v2/resellers/{reseller}/devices/count
+# Counts are included: grabbing the count is the usual first step before
+# pulling a domain's devices.
+# A scraper walks tenant after tenant reading devices;
 # legitimate users stay inside their own domain.  Per IP:
 #   * more than {{ limits.max_domains }} distinct domains within {{ limits.domain_window }}s, or more than {{ limits.max_reads }}
 #     device reads within {{ limits.read_window }}s: blocked for {{ limits.block_period }}s.  Tripping again within
 #     {{ limits.repeat_window }}s of an earlier block: blocked for {{ limits.long_block_period }}s.
 #   * more than {{ limits.slow_max_domains }} distinct domains within {{ limits.slow_window }}s (a slow walk that stays
 #     under the short-window limit): blocked for {{ limits.long_block_period }}s.
-# A read without a usable domain= argument counts as one extra domain, so it
+# A read without a usable domain (no domain= on v1; "~" for the token's own
+# domain or "*" for all domains on v2) counts as one extra domain, so it
 # cannot be used to read outside the counted domains for free.
 # A block only denies device reads.  Phase 2 so POSTed form bodies are
 # inspected as well as query strings.
@@ -654,22 +664,94 @@ SecRule REQUEST_FILENAME "@rx ^/ns-api/(?:index\\.php)?$" \\
              setvar:tx.nssec_device_read=1{% if toggles.device_walk %},\\
              initcol:user=nssec_walk24_%{REMOTE_ADDR}{% endif %}"
 
+SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$" \\
+    "id:1000339,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     t:none,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/domains/([^/]+)/(?:users/[^/]+/)?devices(?:/[^/]+)?(?:/count)?/?$" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         capture,\\
+         setvar:tx.nssec_device_read=1,\\
+         setvar:'tx.nssec_v2_domain=%{TX.1}'{% if toggles.device_walk %},\\
+         initcol:user=nssec_walk24_%{REMOTE_ADDR}{% endif %}"
+
+# Reseller-wide device count: no domain in the path, so it is recorded as a
+# read without a usable domain.
+SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$" \\
+    "id:1000335,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     t:none,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/resellers/[^/]+/devices/count/?$" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         setvar:tx.nssec_device_read=1,\\
+         setvar:tx.nssec_v2_domain=*{% if toggles.device_walk %},\\
+         initcol:user=nssec_walk24_%{REMOTE_ADDR}{% endif %}"
+
 {% endif %}
 {% if toggles.device_read_allowlist_only %}
 
-# ---- v1 API device reads: allowlisted sources only ----
+# ---- Bulk device reads (v1 and v2 API): allowlisted sources only ----
 # Enabled with 'nssec waf update-exclusions --device-read-allowlist-only'.
-# Every v1 device read is denied unless it comes from localhost, an
+# A domain-wide device list is denied unless it comes from localhost, an
 # allowlisted admin IP, a NodePing probe or an SBUS cluster peer (all of
-# which remove tag nssec-abuse above).  Denies before the walk limits run.
+# which remove tag nssec-abuse above).  Reads of one device or of one user's
+# devices are allowed; they still count toward the walk limits.  Bulk means:
+#   v1  object=device&action=read with no real user= or device= value
+#       (empty or wildcard values do not count as scoping the read)
+#   v2  GET /ns-api/v2/domains/{domain}/devices[/count], .../users/*/devices,
+#       or /ns-api/v2/resellers/{reseller}/devices/count
 SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000336,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &TX:nssec_v2_domain "@eq 0" \\
+        "chain"
+        SecRule ARGS:user|ARGS:device "@rx ^[A-Za-z0-9._@+-]+$" \\
+            "t:none,\\
+             setvar:tx.nssec_device_scoped=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000337,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule &TX:nssec_v2_domain "@eq 0" \\
+        "chain"
+        SecRule &TX:nssec_device_scoped "@eq 0" \\
+            "setvar:tx.nssec_device_bulk=1"
+
+SecRule TX:nssec_device_read "@eq 1" \\
+    "id:1000338,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     tag:'nssec-abuse',\\
+     chain"
+    SecRule REQUEST_FILENAME "@rx ^/ns-api/v2/(?:domains/[^/]+/(?:users/\\*/)?devices(?:/count)?|resellers/[^/]+/devices/count)/?$" \\
+        "t:none,t:urlDecodeUni,t:lowercase,\\
+         setvar:tx.nssec_device_bulk=1"
+
+SecRule TX:nssec_device_bulk "@eq 1" \\
     "id:1000360,\\
      phase:2,\\
      deny,\\
      status:403,\\
      log,\\
-     msg:'nssec: v1 device read denied, source IP is not allowlisted',\\
-     logdata:'domain=%{ARGS.domain}',\\
+     msg:'nssec: bulk device read denied, source IP is not allowlisted',\\
+     logdata:'domain=%{ARGS.domain}%{TX.nssec_v2_domain}',\\
      tag:'nssec',\\
      tag:'nssec-abuse',\\
      severity:'CRITICAL'"
@@ -697,7 +779,7 @@ SecRule TX:nssec_device_read "@eq 1" \\
      chain"
     SecRule &TX:nssec_was_blocked "@eq 0" \\
         "chain"
-        SecRule ARGS:domain "@rx ^[a-z0-9][a-z0-9._-]{0,252}$" \\
+        SecRule ARGS:domain|TX:nssec_v2_domain "@rx ^[a-z0-9][a-z0-9._-]{0,252}$" \\
             "t:none,t:lowercase,\\
              setvar:tx.nssec_domain_ok=1"
 
@@ -709,7 +791,7 @@ SecRule TX:nssec_domain_ok "@eq 1" \\
      nolog,\\
      tag:'nssec-abuse',\\
      chain"
-    SecRule ARGS:domain "@rx ^([0-9a-f]{8})" \\
+    SecRule ARGS:domain|TX:nssec_v2_domain "@rx ^([0-9a-f]{8})" \\
         "t:none,t:lowercase,t:sha1,t:hexEncode,\\
          capture,\\
          setvar:'resource.w_%{TX.1}=1',\\
@@ -759,8 +841,8 @@ SecRule TX:nssec_device_read "@eq 1" \\
      phase:2,\\
      pass,\\
      log,\\
-     msg:'nssec: v1 device walking across %{MATCHED_VAR} domains in {{ limits.domain_window }}s',\\
-     logdata:'domain=%{ARGS.domain}',\\
+     msg:'nssec: device walking across %{MATCHED_VAR} domains in {{ limits.domain_window }}s',\\
+     logdata:'domain=%{ARGS.domain}%{TX.nssec_v2_domain}',\\
      tag:'nssec',\\
      tag:'nssec-abuse',\\
      severity:'CRITICAL',\\
@@ -775,7 +857,7 @@ SecRule TX:nssec_device_read "@eq 1" \\
      phase:2,\\
      pass,\\
      log,\\
-     msg:'nssec: v1 device read rate exceeded (%{MATCHED_VAR} reads in {{ limits.read_window }}s)',\\
+     msg:'nssec: device read rate exceeded (%{MATCHED_VAR} reads in {{ limits.read_window }}s)',\\
      tag:'nssec',\\
      tag:'nssec-abuse',\\
      severity:'CRITICAL',\\
@@ -790,8 +872,8 @@ SecRule TX:nssec_device_read "@eq 1" \\
      phase:2,\\
      pass,\\
      log,\\
-     msg:'nssec: v1 slow device walk across %{MATCHED_VAR} domains in {{ limits.slow_window }}s',\\
-     logdata:'domain=%{ARGS.domain}',\\
+     msg:'nssec: slow device walk across %{MATCHED_VAR} domains in {{ limits.slow_window }}s',\\
+     logdata:'domain=%{ARGS.domain}%{TX.nssec_v2_domain}',\\
      tag:'nssec',\\
      tag:'nssec-abuse',\\
      severity:'CRITICAL',\\
@@ -843,7 +925,7 @@ SecRule TX:nssec_device_read "@eq 1" \\
      deny,\\
      status:403,\\
      log,\\
-     msg:'nssec: v1 device read denied, IP is blocked for device walking',\\
+     msg:'nssec: device read denied, IP is blocked for device walking',\\
      tag:'nssec',\\
      tag:'nssec-abuse',\\
      severity:'CRITICAL',\\

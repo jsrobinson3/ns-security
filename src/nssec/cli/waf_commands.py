@@ -111,14 +111,15 @@ def _exclusion_toggle_options(fn):
         click.option(
             "--device-walk/--no-device-walk",
             default=None,
-            help="Per-IP limits on v1 API device reads across domains (default on).",
+            help="Per-IP limits on v1/v2 API device reads across domains (default on).",
         ),
         click.option(
             "--device-read-allowlist-only/--no-device-read-allowlist-only",
             default=None,
             help=(
-                "Deny every v1 API device read that is not from localhost, an "
-                "allowlisted admin IP, NodePing or a cluster peer (default off)."
+                "Deny domain-wide device list reads (v1/v2 API) that are not from "
+                "localhost, an allowlisted admin IP, NodePing or a cluster peer; "
+                "single-device reads are allowed (default off)."
             ),
         ),
         click.option(
@@ -207,9 +208,9 @@ def _toggle_overrides(toggle_flags):
     toggles = {name: value for name, value in toggle_flags.items() if value is not None}
     if toggles.get("device_read_allowlist_only"):
         console.print(
-            "  [yellow]Warning:[/yellow] device-read allowlist-only denies v1 device "
-            "reads from every source not allowlisted — apps and integrations that "
-            "read devices through the v1 API from their own IPs will get 403"
+            "  [yellow]Warning:[/yellow] device-read allowlist-only denies domain-wide "
+            "device list reads from every source not allowlisted — integrations that "
+            "list a domain's devices from their own IPs will get 403"
         )
     if toggles.get("token_audit"):
         console.print(
