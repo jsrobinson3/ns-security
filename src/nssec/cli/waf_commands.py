@@ -131,7 +131,7 @@ def _exclusion_toggle_options(fn):
             default=None,
             help=(
                 "Verbose mode: write every /ns-api/oauth2/token and /ns-api/v2/tokens "
-                "request to the audit log, full bodies (credentials) included "
+                "request to the audit log, credential values masked "
                 "(default off)."
             ),
         ),
@@ -213,8 +213,8 @@ def _toggle_overrides(toggle_flags):
         )
     if toggles.get("token_audit"):
         console.print(
-            "  [yellow]Warning:[/yellow] token audit logs full request bodies — "
-            "passwords and client secrets will be written to the audit log"
+            "  [yellow]Note:[/yellow] token audit writes every token request to the "
+            "audit log; credential values are masked, usernames and other fields are not"
         )
     return toggles
 
@@ -325,10 +325,8 @@ def _build_status_table(status):
             "[yellow]on[/yellow]" if toggles.get("device_read_allowlist_only") else "off",
         )
         table.add_row("  Harvest UA block", _on_off(toggles.get("block_harvest_ua")))
-        table.add_row(
-            "  Token audit",
-            "[yellow]on (full bodies logged)[/yellow]" if toggles.get("token_audit") else "off",
-        )
+        token_audit = "[yellow]on (every token request logged)[/yellow]"
+        table.add_row("  Token audit", token_audit if toggles.get("token_audit") else "off")
     else:
         table.add_row("NS exclusions", "[yellow]not deployed[/yellow]")
 
@@ -814,12 +812,18 @@ def waf_allowlist_add(ip, yes):
     IP can be a single address (192.168.1.1) or CIDR notation (10.0.0.0/8).
     Allowlisted IPs bypass OWASP CRS rules for reduced false positives.
     """
-    from nssec.modules.waf import ModSecurityInstaller, add_allowlisted_ip, get_allowlisted_ips
+    from nssec.modules.waf import (
+        ModSecurityInstaller,
+        add_allowlisted_ip,
+        get_allowlisted_ips,
+        normalize_ipmatch_entry,
+    )
 
     installer = ModSecurityInstaller()
     pf = installer.preflight()
     _require_root_and_modsec(pf, "sudo nssec waf allowlist add")
 
+    ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip in current_ips:
         console.print(f"[yellow]IP {ip} is already allowlisted.[/yellow]")
@@ -850,12 +854,18 @@ def waf_allowlist_delete(ip, yes):
 
     IP must match exactly as it was added (including CIDR notation if used).
     """
-    from nssec.modules.waf import ModSecurityInstaller, get_allowlisted_ips, remove_allowlisted_ip
+    from nssec.modules.waf import (
+        ModSecurityInstaller,
+        get_allowlisted_ips,
+        normalize_ipmatch_entry,
+        remove_allowlisted_ip,
+    )
 
     installer = ModSecurityInstaller()
     pf = installer.preflight()
     _require_root_and_modsec(pf, "sudo nssec waf allowlist delete")
 
+    ip = normalize_ipmatch_entry(ip)
     current_ips = get_allowlisted_ips()
     if ip not in current_ips:
         console.print(f"[yellow]IP {ip} is not in the allowlist.[/yellow]")

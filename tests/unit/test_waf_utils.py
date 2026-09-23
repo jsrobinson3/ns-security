@@ -252,3 +252,35 @@ class TestAppendCrsToSecurity2:
             result = append_crs_to_security2("/etc/modsecurity/crs")
 
         assert result is False
+
+
+class TestBackupFile:
+    """Tests for backup_file's snapshot-refresh behavior.
+
+    A prior version returned the existing .bak.nssec unchanged once one had
+    ever been created. Since _rollback() restores from that same file on a
+    failed `apache2ctl configtest`, a stale backup meant rollback silently
+    discarded every successful edit made since the first snapshot, not just
+    the one that failed. backup_file must always overwrite the snapshot with
+    the current (last-known-good) content.
+    """
+
+    def test_overwrites_existing_backup_with_current_content(self, tmp_path):
+        from nssec.modules.waf.utils import backup_file
+
+        target = tmp_path / "netsapiens-exclusions.conf"
+        backup = tmp_path / "netsapiens-exclusions.conf.bak.nssec"
+
+        target.write_text("state-1")
+        backup_file(str(target))
+        assert backup.read_text() == "state-1"
+
+        target.write_text("state-2")
+        backup_file(str(target))
+        assert backup.read_text() == "state-2"
+
+    def test_returns_none_when_target_missing(self, tmp_path):
+        from nssec.modules.waf.utils import backup_file
+
+        result = backup_file(str(tmp_path / "does-not-exist.conf"))
+        assert result is None

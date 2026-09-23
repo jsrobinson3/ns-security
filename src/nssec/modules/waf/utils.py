@@ -58,12 +58,17 @@ def read_file(path: str) -> str | None:
 
 
 def backup_file(path: str) -> str | None:
-    """Create a backup of a file. Returns backup path or None."""
+    """Snapshot a file to *path*.bak.nssec, overwriting any prior snapshot.
+
+    Callers take this snapshot immediately before writing new content, and
+    roll back to it if the write turns out to break `apache2ctl configtest`.
+    It must always reflect the last-known-good state, not the first one ever
+    seen — a stale, never-refreshed backup would make rollback silently
+    discard every change made since, instead of just the one that failed.
+    """
     if not file_exists(path):
         return None
     backup = path + BACKUP_SUFFIX
-    if file_exists(backup):
-        return backup  # Already backed up from a previous run
     shutil.copy2(path, backup)
     return backup
 
@@ -90,9 +95,9 @@ def remove_file(path: str) -> bool:
 def snapshot_files(paths: list[str]) -> dict[str, str | None]:
     """Current contents of each path (None if absent), for restore_snapshot.
 
-    Unlike backup_file, which keeps only the pre-nssec original, this captures
-    the state right before a write so a failed configtest undoes just that
-    write.
+    Taken once before a multi-file write, so a failed configtest can put every
+    file back together, including ones that did not exist yet (removed on
+    restore) and ones outside the installer's .bak.nssec rollback list.
     """
     return {path: read_file(path) if file_exists(path) else None for path in paths}
 

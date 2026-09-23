@@ -355,4 +355,4 @@ class TestUpdateExclusionsToggleFlags:
         with patch("nssec.modules.waf.fetch_nodeping_probe_ips", return_value=([], "")):
             result = CliRunner().invoke(waf, ["update-exclusions", "-y", "--token-audit"])
 
-        assert "passwords" in result.output
+        assert "masked" in result.output
