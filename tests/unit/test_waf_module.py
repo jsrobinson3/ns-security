@@ -715,6 +715,11 @@ class TestSanitiseArgExclusion:
         ):
             assert f"sanitiseArg:{name}" in block
 
+    def test_masks_credential_request_headers(self):
+        block = self._block(self._render())
+        assert "sanitiseRequestHeader:Authorization" in block
+        assert "sanitiseRequestHeader:Cookie" in block
+
     def test_runs_in_phase_2_per_reference_manual(self):
         assert "phase:2" in self._block(self._render())
 

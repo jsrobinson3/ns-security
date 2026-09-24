@@ -276,6 +276,11 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # Masking is by argument NAME, so `password` is caught on every endpoint that
 # uses it, not just the token endpoint. This is non-disruptive and never blocks.
 #
+# The Authorization and Cookie request headers are masked too: they carry
+# Bearer tokens, the portal's Basic client_id:client_secret on token
+# requests, and session cookies, and would otherwise sit in part B of every
+# audited request.
+#
 # Scope note: ModSecurity 2.9 masks the arguments in place while it writes an
 # audit-log entry, and Apache writes the access_log (%r) afterwards, so the
 # access_log line is masked too -- but only for requests that get an audit-log
@@ -300,7 +305,9 @@ SecAction \\
      sanitiseArg:auth_code,\\
      sanitiseArg:nsToken,\\
      sanitiseArg:ns_t,\\
-     sanitiseArg:passcode"
+     sanitiseArg:passcode,\\
+     sanitiseRequestHeader:Authorization,\\
+     sanitiseRequestHeader:Cookie"
 
 # ---- Admin UI form submissions and third-party tracking cookies ----
 # Cookies from admin UI sessions trigger SQL injection false positives (942100,
@@ -947,6 +954,29 @@ SecRule REQUEST_URI "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
      pass,\\
      nolog,\\
      ctl:auditEngine=On"
+
+# One summary line per token request, written after the response so the
+# status separates successful logins from failed ones.  The fields come from
+# ModSecurity's parsed ARGS, so they read the same whether the client sent
+# them in the query string or in a urlencoded, multipart or JSON body -- the
+# raw bodies spell them differently (name="grant_type", grant%5ftype=,
+# "grant_type":...), which makes the audit entries hard to search.  Lands in
+# the Apache error log and in part H of the audit entry; ip= and txid= are in
+# the line itself so it stands alone when the audit log is shipped line by
+# line (txid is the audit entry's id).  Portal logins reach ns-api from
+# 127.0.0.1 with the browser's address in X-NetSapiens-Remote-Addr, logged as
+# fwd= (trust it only when ip= is 127.0.0.1; any client can send the header).
+# Refresh-token grants carry no username.  Search for: nssec: token request
+SecRule REQUEST_FILENAME "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
+    "id:1000401,\\
+     phase:5,\\
+     pass,\\
+     log,\\
+     msg:'nssec: token request',\\
+     logdata:'status=%{RESPONSE_STATUS} ip=%{REMOTE_ADDR} fwd=%{REQUEST_HEADERS.X-NetSapiens-Remote-Addr} grant_type=%{ARGS.grant_type} username=%{ARGS.username} client_id=%{ARGS.client_id} txid=%{UNIQUE_ID}',\\
+     tag:'nssec',\\
+     tag:'nssec-token-audit',\\
+     severity:'NOTICE'"
 {% endif %}
 """
 
