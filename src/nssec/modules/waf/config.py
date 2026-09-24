@@ -967,7 +967,13 @@ SecRule REQUEST_URI "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
 # 127.0.0.1 with the browser's address in X-NetSapiens-Remote-Addr, logged as
 # fwd= (trust it only when ip= is 127.0.0.1; any client can send the header).
 # Refresh-token grants carry no username.  Search for: nssec: token request
-SecRule REQUEST_FILENAME "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
+#
+# Matches on REQUEST_URI, not REQUEST_FILENAME: /ns-api/ is served by PHP,
+# and REQUEST_FILENAME reflects the path after Apache's rewrite (which is
+# the script, not the request), so the pattern never matched there and the
+# rule silently never fired.  1000400 above matches on REQUEST_URI for the
+# same reason -- keep the two in step.
+SecRule REQUEST_URI "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
     "id:1000401,\\
      phase:5,\\
      pass,\\
