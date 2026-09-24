@@ -354,58 +354,6 @@ class TestTokenAudit:
         assert not rx.search("/ns-api/v2/domains")
 
 
-class TestTokenAuditSummaryLine:
-    def test_off_by_default(self):
-        assert '"id:1000401,' not in _render()
-
-    def test_logs_after_response_with_status(self):
-        block = _block(_render(token_audit=True), 1000401)
-        assert "phase:5" in block
-        assert "pass" in block
-        assert "%{RESPONSE_STATUS}" in block
-        assert "ip=%{REMOTE_ADDR}" in block
-        assert "txid=%{UNIQUE_ID}" in block
-        assert "fwd=%{REQUEST_HEADERS.X-NetSapiens-Remote-Addr}" in block
-
-    def test_fields_from_parsed_args_never_secrets(self):
-        block = _block(_render(token_audit=True), 1000401)
-        for name in ("grant_type", "username", "client_id"):
-            assert f"%{{ARGS.{name}}}" in block
-        for secret in ("password", "client_secret", "access_token", "passcode"):
-            assert f"ARGS.{secret}" not in block
-
-    def test_matches_both_token_endpoints(self):
-        block = _block(_render(token_audit=True), 1000401)
-        pattern = re.search(r'SecRule REQUEST_URI "@rx ([^"]+)"', block).group(1)
-        for path in ("/ns-api/oauth2/token", "/ns-api/oauth2/token/", "/ns-api/v2/tokens"):
-            assert re.search(pattern, path)
-        assert not re.search(pattern, "/ns-api/v2/domains")
-
-    def test_matches_on_request_uri_not_request_filename(self):
-        """/ns-api/ is served by PHP.
-
-        REQUEST_FILENAME reflects the path after Apache's rewrite, so the
-        pattern never matches there and the rule silently never fires.
-        """
-        block = _block(_render(token_audit=True), 1000401)
-        assert "SecRule REQUEST_URI" in block
-        assert "REQUEST_FILENAME" not in block
-
-    def test_both_token_rules_match_the_same_variable(self):
-        rendered = _render(token_audit=True)
-        variables = re.findall(
-            r"SecRule (\S+) \"@rx \^/ns-api/\(\?:oauth2/token\|v2/tokens\)\"", rendered
-        )
-        assert len(variables) == 2
-        assert len(set(variables)) == 1, f"token rules disagree: {variables}"
-
-    def test_not_exempted_for_localhost_or_allowlists(self):
-        """Portal logins arrive from localhost and must still be recorded."""
-        block = _block(_render(token_audit=True), 1000401)
-        assert "nssec-abuse" not in block
-        assert "OWASP_CRS" not in block
-
-
 class TestRuleIds:
     def test_ids_unique_with_everything_enabled(self):
         rendered = _render(

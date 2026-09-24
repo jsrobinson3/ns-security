@@ -954,35 +954,6 @@ SecRule REQUEST_URI "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
      pass,\\
      nolog,\\
      ctl:auditEngine=On"
-
-# One summary line per token request, written after the response so the
-# status separates successful logins from failed ones.  The fields come from
-# ModSecurity's parsed ARGS, so they read the same whether the client sent
-# them in the query string or in a urlencoded, multipart or JSON body -- the
-# raw bodies spell them differently (name="grant_type", grant%5ftype=,
-# "grant_type":...), which makes the audit entries hard to search.  Lands in
-# the Apache error log and in part H of the audit entry; ip= and txid= are in
-# the line itself so it stands alone when the audit log is shipped line by
-# line (txid is the audit entry's id).  Portal logins reach ns-api from
-# 127.0.0.1 with the browser's address in X-NetSapiens-Remote-Addr, logged as
-# fwd= (trust it only when ip= is 127.0.0.1; any client can send the header).
-# Refresh-token grants carry no username.  Search for: nssec: token request
-#
-# Matches on REQUEST_URI, not REQUEST_FILENAME: /ns-api/ is served by PHP,
-# and REQUEST_FILENAME reflects the path after Apache's rewrite (which is
-# the script, not the request), so the pattern never matched there and the
-# rule silently never fired.  1000400 above matches on REQUEST_URI for the
-# same reason -- keep the two in step.
-SecRule REQUEST_URI "@rx ^/ns-api/(?:oauth2/token|v2/tokens)" \\
-    "id:1000401,\\
-     phase:5,\\
-     pass,\\
-     log,\\
-     msg:'nssec: token request',\\
-     logdata:'status=%{RESPONSE_STATUS} ip=%{REMOTE_ADDR} fwd=%{REQUEST_HEADERS.X-NetSapiens-Remote-Addr} grant_type=%{ARGS.grant_type} username=%{ARGS.username} client_id=%{ARGS.client_id} txid=%{UNIQUE_ID}',\\
-     tag:'nssec',\\
-     tag:'nssec-token-audit',\\
-     severity:'NOTICE'"
 {% endif %}
 """
 
