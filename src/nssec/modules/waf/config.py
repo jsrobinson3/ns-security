@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "10"
+NS_EXCLUSIONS_VERSION = "11"
 
 # Optional features of the exclusions file, with their defaults.  The deployed
 # file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
