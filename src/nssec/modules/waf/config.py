@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "10"
+NS_EXCLUSIONS_VERSION = "11"
 
 # Optional features of the exclusions file, with their defaults.  The deployed
 # file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
@@ -493,6 +493,37 @@ SecRule REMOTE_ADDR "@ipMatch 127.0.0.1,::1" \\
      nolog,\\
      ctl:ruleRemoveByTag=OWASP_CRS,\\
      ctl:ruleRemoveByTag=nssec-abuse"
+
+# ---- Poly/Polycom firmware downloads (literal /../ in the request path) ----
+# Poly desk phones (VVX, Edge) build their firmware URL by combining the
+# NDP config path with a relative firmware path, producing a literal
+# /cfg/../frm/<file>.sip.ld - normal provisioning behavior for this vendor,
+# not a traversal attempt. Trips the CRS path-traversal rules plus the
+# missing-Content-Type/restricted-Content-Range header rules the same
+# firmware GET also matches. Scoped to the exact vendor filename pattern
+# rather than a blanket /frm/ or /cfg/ bypass.
+SecRule REQUEST_URI "@rx ^/cfg/\\.\\./frm/.*\\.sip\\.ld$" \\
+    "id:1000016,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveByTag=OWASP_CRS"
+
+# ---- Recording API: orig_callid false-positives an RCE numeric-shell rule ----
+# /ns-api/?object=recording&action=read carries a SIP Call-ID in orig_callid
+# that can incidentally match CRS 932270's shell "~N" expression pattern
+# (e.g. a leading +/- or a bare digit run - both legal in a Call-ID).
+# Narrow removal of the one target on the one argument for this one object
+# type, not a blanket API bypass.
+SecRule REQUEST_URI "@beginsWith /ns-api/" \\
+    "id:1000017,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     chain"
+    SecRule ARGS_GET:object "@streq recording" \\
+        "t:none,\\
+         ctl:ruleRemoveTargetById=932270;ARGS:orig_callid"
 
 {% if admin_ips %}
 # ---- Allowlisted admin IPs (reduced WAF strictness) ----
