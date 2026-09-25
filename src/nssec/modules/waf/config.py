@@ -111,6 +111,15 @@ ABUSE_LIMITS = {
 # stable when the manifest is reordered; room for 999 addresses.
 CLUSTER_RULE_ID_BASE = 1001000
 CLUSTER_BLOCK_END = "# ---- end cluster peers ----"
+
+# The admin and NodePing allowlists rendered into mod_evasive (see
+# nssec.modules.waf.evasive).  DOSWhitelist takes wildcard octets rather than
+# prefixes, so an entry only converts exactly on an octet boundary; a range
+# that does not can be written out address by address up to this many.
+EVASIVE_ALLOWLIST_BEGIN = "# ---- Allowlisted sources (same as the CRS exclusions) ----"
+EVASIVE_ALLOWLIST_END = "# ---- end allowlisted sources ----"
+EVASIVE_EXPAND_LIMIT = 256
+EVASIVE_DEFAULT_EXPAND = False
 RESTRICT_CLUSTER_BEGIN = "# BEGIN nssec cluster peers (managed by nssec waf cluster refresh)"
 RESTRICT_CLUSTER_END = "# END nssec cluster peers"
 
@@ -1106,6 +1115,7 @@ EVASIVE_CONF_TEMPLATE = """\
 # Managed by nssec
 # Generated: {{ timestamp }}
 # Profile: {{ profile }}
+# Expand-CIDR: {% if evasive_expand %}on{% else %}off{% endif %}
 #
 # HTTP flood / DDoS protection for Apache.
 # WARNING: mod_evasive has no detection-only mode. When enabled it WILL
@@ -1172,6 +1182,28 @@ EVASIVE_CONF_TEMPLATE = """\
     # Not listed: {{ cluster_ipv6 | length }} IPv6 peer address(es) - DOSWhitelist is IPv4-only.
 {%- endif %}
     {{ cluster_block_end }}
+{%- endif %}
+{%- if evasive_allowlist or evasive_skipped %}
+
+    {{ evasive_allowlist_begin }}
+    # The admin IPs and NodePing probes that the CRS exclusions already
+    # allowlist. mod_evasive runs independently of ModSecurity, so without
+    # these an allowlisted host still gets a 403 once it trips a threshold.
+    # DOSWhitelist matches wildcard octets, not prefixes, so a range converts
+    # only on an octet boundary (10.0.0.0/8 -> 10.*.*.*).
+    # Manage with: nssec waf allowlist add|remove, nssec waf evasive enable
+{%- for value, label in evasive_allowlist %}
+    # {{ label }}
+    DOSWhitelist            {{ value }}
+{%- endfor %}
+{%- if evasive_skipped %}
+    #
+    # Not whitelisted here:
+{%- for entry, reason in evasive_skipped %}
+    #   {{ entry }} - {{ reason }}
+{%- endfor %}
+{%- endif %}
+    {{ evasive_allowlist_end }}
 {%- endif %}
 </IfModule>
 """

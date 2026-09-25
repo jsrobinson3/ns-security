@@ -519,6 +519,38 @@ Create the log directory:
 sudo mkdir -p /var/log/apache2/mod_evasive
 ```
 
+### Whitelisting the same sources as the CRS exclusions
+
+mod_evasive runs independently of ModSecurity, so an IP that bypasses the CRS rules can still be answered with a 403 once it trips a threshold. `nssec` renders all three allowlist sources into `DOSWhitelist`:
+
+| Source | CRS exclusion rule | In `evasive.conf` |
+|---|---|---|
+| Loopback / RFC 1918 | `1000005` | hardcoded defaults |
+| SBUS cluster peers | `1001000+` | from the SBUS manifest — `nssec waf cluster refresh` |
+| Admin allowlist | `1000100+` | from the deployed exclusions conf |
+| NodePing probes | `1000200+` | from the deployed exclusions conf |
+
+The admin and NodePing entries are re-derived from `netsapiens-exclusions.conf` (the only store for them) on every write, so `nssec waf allowlist add` followed by `nssec waf evasive enable` keeps the two configs in step. `nssec waf status` reports when `evasive.conf` lists fewer than it should.
+
+**`DOSWhitelist` cannot express a prefix.** It matches literal addresses with wildcard octets, which is why the defaults read `10.*.*.*` and not `10.0.0.0/8`. An allowlist entry therefore only converts exactly when its prefix falls on an octet boundary:
+
+| Allowlist entry | `DOSWhitelist` |
+|---|---|
+| `203.0.113.5`, `203.0.113.5/32` | `203.0.113.5` |
+| `192.168.1.0/24` | `192.168.1.*` |
+| `172.16.0.0/16` | `172.16.*.*` |
+| `10.0.0.0/8` | `10.*.*.*` |
+| `198.51.100.64/27` | none — reported, not written |
+| `2001:db8::1` | none — `DOSWhitelist` is IPv4-only |
+
+Anything with no exact form is recorded as a comment in the generated file and surfaced in `nssec waf status`. It is never rounded up to the enclosing octet, since that would excuse addresses nobody allowlisted. To write such a range out address by address instead:
+
+```bash
+sudo nssec waf evasive enable --expand-cidr
+```
+
+That expands any range up to 256 addresses (a `/24` or smaller); larger ones are still reported. The choice is recorded as `# Expand-CIDR: on|off` in `evasive.conf` and preserved across a profile change or a `cluster refresh`.
+
 ### Tuning recommendations
 
 1. **Start with the standard profile** (or high thresholds manually) to avoid blocking legitimate traffic

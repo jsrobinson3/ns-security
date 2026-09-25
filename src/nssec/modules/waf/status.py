@@ -21,6 +21,7 @@ from nssec.modules.waf.config import (
     SECURITY2_CONF,
     SECURITY2_LOAD,
 )
+from nssec.modules.waf.evasive import deployed_whitelist, parse_evasive_expand, resolve_whitelist
 from nssec.modules.waf.utils import parse_exclusion_toggles
 
 
@@ -54,6 +55,10 @@ class WafStatus:
     cluster_discovered_at: str = ""
     cluster_evasive_count: int = 0
     cluster_drift: list[str] = field(default_factory=list)
+    evasive_allowlist_count: int = 0
+    evasive_allowlist_expected: int = 0
+    evasive_expand_cidr: bool = False
+    evasive_allowlist_warnings: list[str] = field(default_factory=list)
     modsec_version: str | None = None
     disabled_crs_rules: int = 0
     audit_log_exists: bool = False
@@ -259,6 +264,23 @@ def get_waf_status() -> WafStatus:
         status.cluster_evasive_count = len(deployed_evasive_peers(evasive_content))
         if evasive_content:
             status.cluster_drift = evasive_drift(cluster, evasive_content)
+
+    # Admin / NodePing allowlists: what evasive.conf lists vs what it should.
+    # Imported here rather than at module scope: those readers live in the
+    # package __init__, which this module is imported from.
+    from nssec.modules.waf import get_allowlisted_ips, get_nodeping_ips
+
+    evasive_content = _read_file(EVASIVE_CONF) or ""
+    recorded = parse_evasive_expand(evasive_content)
+    status.evasive_expand_cidr = bool(recorded)
+    expected = resolve_whitelist(
+        get_allowlisted_ips(),
+        get_nodeping_ips(),
+        expand=bool(recorded),
+    )
+    status.evasive_allowlist_count = len(deployed_whitelist(evasive_content))
+    status.evasive_allowlist_expected = len(expected.entries)
+    status.evasive_allowlist_warnings = expected.warnings()
 
     status.audit_log_exists = Path(MODSEC_AUDIT_LOG).exists()
     if status.audit_log_exists:

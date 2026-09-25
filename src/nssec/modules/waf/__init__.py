@@ -25,6 +25,7 @@ from nssec.modules.waf.config import (
     CRS_SETUP_OVERRIDES_TEMPLATE,
     EVASIVE_CONF,
     EVASIVE_CONF_TEMPLATE,
+    EVASIVE_DEFAULT_EXPAND,
     EVASIVE_DEFAULT_PROFILE,
     EVASIVE_LOAD,
     EVASIVE_LOG_DIR,
@@ -47,6 +48,11 @@ from nssec.modules.waf.config import (
     SECURITY2_CONF,
     SECURITY2_CONF_TEMPLATE,
     SECURITY2_LOAD,
+)
+from nssec.modules.waf.evasive import (
+    EvasiveWhitelist,
+    parse_evasive_expand,
+    resolve_whitelist,
 )
 from nssec.modules.waf.types import InstallResult, PreflightResult, StepResult
 from nssec.modules.waf.utils import (
@@ -338,10 +344,36 @@ class ModSecurityInstaller:
         msg = f"Configured ModSecurity (SecRuleEngine {self.mode})"
         return StepResult(message=msg)
 
+    def evasive_whitelist(
+        self,
+        admin_ips: list[str] | None = None,
+        nodeping_ips: list[str] | None = None,
+        expand_cidr: bool | None = None,
+    ) -> EvasiveWhitelist:
+        """The DOSWhitelist entries for the sources the CRS exclusions allowlist.
+
+        ``None`` for either list reads it back from the deployed exclusions
+        conf, which is the only store for them — matching how
+        ``install_exclusions`` carries a section forward.  ``expand_cidr``
+        None keeps whatever the deployed evasive.conf recorded, so a profile
+        change or a cluster refresh does not silently flip the setting.
+        """
+        if admin_ips is None:
+            admin_ips = get_allowlisted_ips()
+        if nodeping_ips is None:
+            nodeping_ips = get_nodeping_ips()
+        if expand_cidr is None:
+            deployed = read_file(EVASIVE_CONF)
+            recorded = parse_evasive_expand(deployed) if deployed else None
+            expand_cidr = EVASIVE_DEFAULT_EXPAND if recorded is None else recorded
+        return resolve_whitelist(admin_ips, nodeping_ips, expand=expand_cidr)
+
     def setup_evasive_config(
         self,
         profile: str = EVASIVE_DEFAULT_PROFILE,
         cluster: ClusterPeers | None = None,
+        whitelist: EvasiveWhitelist | None = None,
+        expand_cidr: bool | None = None,
     ) -> StepResult:
         """Write the mod_evasive configuration with the given threshold profile.
 
@@ -349,8 +381,10 @@ class ModSecurityInstaller:
           - "standard" (default): high thresholds, only catches extreme floods.
           - "strict": tighter thresholds tuned for NetSapiens traffic patterns.
 
-        ``cluster`` None uses the cached cluster peers.  DOSWhitelist is
-        IPv4-only, so IPv6 peers are left out (and counted in a comment).
+        ``cluster`` None uses the cached cluster peers.  ``whitelist`` None
+        derives the admin/NodePing entries from the deployed exclusions conf.
+        DOSWhitelist is IPv4-only and cannot express a prefix, so IPv6 peers
+        and non-octet ranges are left out and reported in a comment.
         """
         if not self.install_evasive:
             return StepResult(skipped=True, message="Evasive installation skipped")
@@ -364,10 +398,13 @@ class ModSecurityInstaller:
 
         if cluster is None:
             cluster = cached_cluster_peers(read=read_file)
+        if whitelist is None:
+            whitelist = self.evasive_whitelist(expand_cidr=expand_cidr)
         thresholds = EVASIVE_PROFILES[profile]
         content = render(
             EVASIVE_CONF_TEMPLATE,
             **cluster.template_context(),
+            **whitelist.template_context(),
             profile=profile,
             log_dir=EVASIVE_LOG_DIR,
             log_file=EVASIVE_LOG_FILE,
@@ -382,7 +419,11 @@ class ModSecurityInstaller:
             msg += f", {len(cluster.ipv4)} cluster peer IP(s) whitelisted"
             if cluster.ipv6:
                 msg += f" ({len(cluster.ipv6)} IPv6 left out: DOSWhitelist is IPv4-only)"
-        return StepResult(message=msg)
+        if whitelist.entries:
+            msg += f", {len(whitelist.entries)} allowlisted source(s) whitelisted"
+        if whitelist.skipped:
+            msg += f", {len(whitelist.skipped)} entry/entries not representable"
+        return StepResult(message=msg, warnings=whitelist.warnings())
 
     def refresh_evasive_cluster(self, cluster: ClusterPeers) -> StepResult:
         """Re-render a deployed evasive.conf with new cluster peers, same profile."""
