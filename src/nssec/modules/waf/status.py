@@ -117,15 +117,22 @@ def _read_file(path: str) -> str | None:
         return None
 
 
-def _tail_file(path: str, lines: int = 10) -> list[str]:
-    """Return the last N lines of a file."""
+def _tail_file(path: str, lines: int = 10, chunk_size: int = 64 * 1024) -> list[str]:
+    """Return the last N lines of a file, reading backwards from EOF."""
     try:
-        # Audit log may contain binary request bodies; use replace to handle them
-        content = Path(path).read_text(errors="replace")
-        all_lines = content.splitlines()
-        return all_lines[-lines:]
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            data = b""
+            while pos > 0 and data.count(b"\n") <= lines:
+                step = min(chunk_size, pos)
+                pos -= step
+                f.seek(pos)
+                data = f.read(step) + data
     except (OSError, PermissionError):
         return []
+    # Audit log may contain binary request bodies; use replace to handle them
+    return data.decode(errors="replace").splitlines()[-lines:]
 
 
 def _parse_security2_crs_path(content: str) -> str | None:

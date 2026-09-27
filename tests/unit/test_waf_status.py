@@ -122,3 +122,46 @@ class TestExclusionsTemplateHash:
 
         assert len(NS_EXCLUSIONS_HASH) == 12
         assert all(c in "0123456789abcdef" for c in NS_EXCLUSIONS_HASH)
+
+
+class TestTailFile:
+    """Tests for _tail_file."""
+
+    def test_returns_last_n_lines(self, tmp_path):
+        from nssec.modules.waf.status import _tail_file
+
+        log = tmp_path / "audit.log"
+        log.write_text("".join(f"line {i}\n" for i in range(100)))
+        assert _tail_file(str(log), 3) == ["line 97", "line 98", "line 99"]
+
+    def test_spans_chunk_boundaries(self, tmp_path):
+        from nssec.modules.waf.status import _tail_file
+
+        log = tmp_path / "audit.log"
+        log.write_text("".join(f"line {i}\n" for i in range(1000)))
+        expected = [f"line {i}" for i in range(990, 1000)]
+        assert _tail_file(str(log), 10, chunk_size=7) == expected
+
+    def test_short_file_returns_everything(self, tmp_path):
+        from nssec.modules.waf.status import _tail_file
+
+        log = tmp_path / "audit.log"
+        log.write_text("a\nb")
+        assert _tail_file(str(log), 10) == ["a", "b"]
+
+    def test_empty_and_missing_files(self, tmp_path):
+        from nssec.modules.waf.status import _tail_file
+
+        log = tmp_path / "audit.log"
+        log.write_bytes(b"")
+        assert _tail_file(str(log)) == []
+        assert _tail_file(str(tmp_path / "nope.log")) == []
+
+    def test_binary_bodies_are_replaced(self, tmp_path):
+        from nssec.modules.waf.status import _tail_file
+
+        log = tmp_path / "audit.log"
+        log.write_bytes(b"ok\n\xff\xfebody\n")
+        lines = _tail_file(str(log), 2)
+        assert lines[0] == "ok"
+        assert lines[1].endswith("body")
