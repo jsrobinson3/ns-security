@@ -170,16 +170,16 @@ class TestWafAllowlistAdd:
         ) as mock_add:
             mock_add.return_value = MagicMock(success=True, message="Added")
 
-            result = runner.invoke(waf, ["allowlist", "add", "54.196.79.211/32", "-y"])
+            result = runner.invoke(waf, ["allowlist", "add", "203.0.113.211/32", "-y"])
 
             assert result.exit_code == 0
-            mock_add.assert_called_once_with("54.196.79.211")
+            mock_add.assert_called_once_with("203.0.113.211")
 
     def test_skips_duplicate_ip_given_as_full_host_cidr(self, runner, mock_installer):
         """A bare IP already on the allowlist should be recognized as a
         duplicate even when re-added with a "/32" suffix."""
-        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=["54.196.79.211"]):
-            result = runner.invoke(waf, ["allowlist", "add", "54.196.79.211/32", "-y"])
+        with patch("nssec.modules.waf.get_allowlisted_ips", return_value=["203.0.113.211"]):
+            result = runner.invoke(waf, ["allowlist", "add", "203.0.113.211/32", "-y"])
 
             assert result.exit_code == 0
             assert "already allowlisted" in result.output
