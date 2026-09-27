@@ -47,11 +47,34 @@ def _display_install_plan(pf, mode, skip_evasive):
     sec2_state = "wildcard include" if pf.security2_has_wildcard else "standard"
     sec2_action = "keep (wildcard picks up new configs)" if pf.security2_has_wildcard else "write"
     table.add_row("security2.conf", sec2_state, sec2_action)
+    _add_rule_conflict_row(table, pf.rule_conflicts)
 
     if not skip_evasive:
         table.add_row("mod_evasive", "", "install + enable")
 
     console.print(table)
+
+
+def _add_rule_conflict_row(table, conflicts):
+    """Plan row for existing rules whose ids collide with the CRS."""
+    if not conflicts:
+        table.add_row("Existing ModSecurity rules", "no CRS id collisions", "keep")
+        return
+    ids = sum(len(conflict.ids) for conflict in conflicts)
+    table.add_row(
+        "Existing ModSecurity rules",
+        f"[red]{ids} id(s) collide with CRS in {len(conflicts)} file(s)[/red]",
+        "[red]blocked: resolve first[/red]",
+    )
+
+
+def _print_rule_conflict_hint():
+    """Explain how to clear a rule id conflict. nssec never edits those files."""
+    console.print(
+        "  Rule ids must be unique across every loaded config. Remove, renumber, "
+        "or stop including the rules above, then re-run [cyan]nssec waf init[/cyan]."
+    )
+    console.print("  [dim]No changes were made.[/dim]")
 
 
 def _print_install_results(result):
@@ -412,11 +435,16 @@ def waf_init(
     )
 
     console.print("[bold]Running preflight checks...[/bold]")
-    pf = installer.preflight()
+    pf = installer.preflight(check_rule_conflicts=True)
 
     if not pf.can_proceed:
+        if pf.rule_conflicts:
+            console.print()
+            _display_install_plan(pf, mode, skip_evasive)
         for err in pf.errors:
             console.print(f"  [red]Error:[/red] {err}")
+        if pf.rule_conflicts:
+            _print_rule_conflict_hint()
         raise SystemExit(1)
 
     console.print()

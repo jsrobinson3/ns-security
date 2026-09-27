@@ -197,6 +197,15 @@ def parse_security2_conf(path: str) -> tuple[bool, bool]:
     return has_wildcard, has_crs_load
 
 
+def is_old_crs_include(stripped: str) -> bool:
+    """True for a security2.conf line that append_crs_to_security2 comments out."""
+    return (
+        not stripped.startswith("#")
+        and "IncludeOptional" in stripped
+        and "modsecurity-crs" in stripped
+    )
+
+
 def append_crs_to_security2(crs_path: str) -> bool:
     """Append CRS IncludeOptional directives to an existing security2.conf.
 
@@ -213,11 +222,7 @@ def append_crs_to_security2(crs_path: str) -> bool:
     new_lines = []
     for line in sec2_content.splitlines():
         stripped = line.strip()
-        if (
-            not stripped.startswith("#")
-            and "IncludeOptional" in stripped
-            and "modsecurity-crs" in stripped
-        ):
+        if is_old_crs_include(stripped):
             new_lines.append("    # Disabled by nssec (CRS v4 managed below)")
             new_lines.append(f"    # {stripped}")
         else:

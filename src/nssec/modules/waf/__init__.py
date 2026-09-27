@@ -49,6 +49,16 @@ from nssec.modules.waf.config import (
     SECURITY2_CONF_TEMPLATE,
     SECURITY2_LOAD,
 )
+from nssec.modules.waf.conflicts import (
+    describe_conflict,
+    expand_config_path,
+    extract_rule_ids,
+    find_rule_conflicts,
+    list_loaded_configs,
+    parse_include_directives,
+    read_crs_rule_ids,
+    resolve_includes,
+)
 from nssec.modules.waf.evasive import (
     EvasiveWhitelist,
     parse_evasive_expand,
@@ -61,6 +71,7 @@ from nssec.modules.waf.utils import (
     detect_modsec_mode,
     detect_modsec_version,
     file_exists,
+    is_old_crs_include,
     package_installed,
     parse_exclusion_toggles,
     parse_security2_conf,
@@ -224,8 +235,12 @@ class ModSecurityInstaller:
     # Preflight
     # ------------------------------------------------------------------
 
-    def preflight(self) -> PreflightResult:
-        """Run all preflight checks and return results."""
+    def preflight(self, check_rule_conflicts: bool = False) -> PreflightResult:
+        """Run all preflight checks and return results.
+
+        ``check_rule_conflicts`` also scans every loaded Apache config for
+        rule ids that collide with the CRS init installs. Only init needs it.
+        """
         pf = PreflightResult()
 
         pf.is_root = is_root()
@@ -250,9 +265,66 @@ class ModSecurityInstaller:
                 "will not overwrite (new configs will be picked "
                 "up automatically)"
             )
+        if check_rule_conflicts:
+            self._check_rule_conflicts(pf)
 
         self._preflight = pf
         return pf
+
+    def _check_rule_conflicts(self, pf: PreflightResult) -> None:
+        """Record loaded configs outside nssec whose rule ids collide with the CRS."""
+        loaded = list_loaded_configs()
+        if not loaded:
+            pf.warnings.append(
+                "Could not list the loaded Apache configs; rule id conflict check skipped"
+            )
+            return
+        crs_path = self._target_crs_path(pf)
+        skip = self._displaced_configs(pf, crs_path) | {MODSEC_CONF, NS_EXCLUSIONS_CONF}
+        scan = {
+            path: read_file(path) or ""
+            for path in loaded
+            if path not in skip and not path.startswith(crs_path + "/")
+        }
+        pf.rule_conflicts = find_rule_conflicts(scan, self._crs_rule_ids(pf, crs_path))
+        pf.errors.extend(describe_conflict(conflict) for conflict in pf.rule_conflicts)
+
+    @staticmethod
+    def _has_crs_v4(pf: PreflightResult) -> bool:
+        return bool(pf.crs_installed and pf.crs_version and pf.crs_version.startswith("4"))
+
+    def _target_crs_path(self, pf: PreflightResult) -> str:
+        """The CRS directory security2.conf will include once init is done."""
+        if self._has_crs_v4(pf) and pf.crs_path:
+            return pf.crs_path
+        return CRS_INSTALL_DIR
+
+    def _crs_rule_ids(self, pf: PreflightResult, crs_path: str) -> set[int] | None:
+        """Ids of the CRS init will load, or None if it is not on disk yet."""
+        if not self._has_crs_v4(pf):
+            return None
+        ids = read_crs_rule_ids(crs_path)
+        return (ids | extract_rule_ids(CRS_SETUP_OVERRIDES_TEMPLATE)) if ids else None
+
+    def _displaced_configs(self, pf: PreflightResult, crs_path: str) -> set[str]:
+        """Configs that init's security2.conf update will stop loading."""
+        content = read_file(SECURITY2_CONF) or ""
+        if pf.security2_has_wildcard:
+            if crs_path in content:
+                return set()
+            lines = [line.strip() for line in content.splitlines()]
+            targets = [
+                target
+                for line in lines
+                if is_old_crs_include(line)
+                for target in parse_include_directives(line)
+            ]
+            return set(resolve_includes(targets, read_file, expand_config_path))
+        # Replaced wholesale from the template, so nothing it includes survives.
+        targets = parse_include_directives(content)
+        enabled = SECURITY2_CONF.replace("mods-available", "mods-enabled")
+        displaced = set(resolve_includes(targets, read_file, expand_config_path))
+        return displaced | {SECURITY2_CONF, enabled}
 
     def _detect_crs(self) -> tuple[bool, str | None, str | None]:
         """Detect CRS installation and version. SSH-aware."""
@@ -474,8 +546,7 @@ class ModSecurityInstaller:
         """Install OWASP CRS v4, downloading from GitHub if apt has v3."""
         pf = self._preflight or self.preflight()
 
-        has_v4 = pf.crs_installed and pf.crs_version and pf.crs_version.startswith("4")
-        if has_v4:
+        if self._has_crs_v4(pf):
             # Still update crs-setup.conf with latest template values
             self._update_crs_setup(pf.crs_path)
             disabled = self._disable_incompatible_crs_rules(pf.crs_path)
@@ -758,7 +829,7 @@ class ModSecurityInstaller:
     ) -> InstallResult:
         """Run the full installation sequence."""
         result = InstallResult(mode=self.mode)
-        pf = self.preflight()
+        pf = self.preflight(check_rule_conflicts=True)
 
         if not pf.can_proceed:
             result.errors = pf.errors

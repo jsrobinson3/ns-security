@@ -27,6 +27,7 @@ def mock_installer():
         pf.modsec_installed = True
         pf.modsec_enabled = True
         pf.modsec_mode = "On"
+        pf.rule_conflicts = []
         installer.preflight.return_value = pf
 
         # Default step result

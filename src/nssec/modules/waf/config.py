@@ -59,6 +59,11 @@ NS_EXCLUSIONS_CONF = "/etc/modsecurity/netsapiens-exclusions.conf"
 MODSEC_AUDIT_LOG = "/var/log/apache2/modsec_audit.log"
 MODSEC_TMP_DIR = "/tmp/"
 MODSEC_DATA_DIR = "/tmp/"
+APACHE_SERVER_ROOT = "/etc/apache2"
+APACHE2_CONF = "/etc/apache2/apache2.conf"
+
+# Rule id block reserved for OWASP CRS; any other rule using one collides.
+CRS_RESERVED_ID_RANGE = (900000, 999999)
 
 # CRS locations to check — nssec-managed path first so v4 is preferred
 # over the apt v3 package when both exist.

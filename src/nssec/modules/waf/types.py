@@ -20,6 +20,14 @@ class StepResult:
 
 
 @dataclass
+class RuleConflict:
+    """A config file outside nssec whose rule ids collide with the CRS."""
+
+    path: str
+    ids: list[int] = field(default_factory=list)
+
+
+@dataclass
 class PreflightResult:
     """Result of preflight checks before installation."""
 
@@ -34,12 +42,13 @@ class PreflightResult:
     crs_path: str | None = None
     security2_has_wildcard: bool = False
     security2_has_crs_load: bool = False
+    rule_conflicts: list[RuleConflict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
     def can_proceed(self) -> bool:
-        return self.is_root and self.apache_installed
+        return self.is_root and self.apache_installed and not self.rule_conflicts
 
 
 @dataclass
