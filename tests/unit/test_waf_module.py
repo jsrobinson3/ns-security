@@ -44,10 +44,10 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
         mock_file_ops["read"].return_value = """
 SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
 SecRule REMOTE_ADDR "@ipMatch 10.0.0.0/8" "id:1000102,phase:1,pass"
-SecRule REMOTE_ADDR "@ipMatch 74.219.23.50" "id:1000103,phase:1,pass"
+SecRule REMOTE_ADDR "@ipMatch 203.0.113.50" "id:1000103,phase:1,pass"
 """
         result = get_allowlisted_ips()
-        assert result == ["192.168.1.100", "10.0.0.0/8", "74.219.23.50"]
+        assert result == ["192.168.1.100", "10.0.0.0/8", "203.0.113.50"]
 
     def test_parses_cidr_notation(self, mock_file_ops):
         """Should correctly parse CIDR notation IPs."""
@@ -72,7 +72,7 @@ class TestNormalizeIpmatchEntry:
     def test_strips_ipv4_host_mask(self):
         from nssec.modules.waf import normalize_ipmatch_entry
 
-        assert normalize_ipmatch_entry("54.196.79.211/32") == "54.196.79.211"
+        assert normalize_ipmatch_entry("203.0.113.211/32") == "203.0.113.211"
 
     def test_strips_ipv6_host_mask(self):
         from nssec.modules.waf import normalize_ipmatch_entry
@@ -148,12 +148,12 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
         from nssec.modules.waf import add_allowlisted_ip
 
         mock_file_ops["read"].return_value = ""
-        result = add_allowlisted_ip("54.196.79.211/32")
+        result = add_allowlisted_ip("203.0.113.211/32")
 
         assert result.success
-        assert result.message == "Added 54.196.79.211 to allowlist"
+        assert result.message == "Added 203.0.113.211 to allowlist"
         _, kwargs = mock_file_ops["render"].call_args
-        assert kwargs["admin_ips"] == ["54.196.79.211"]
+        assert kwargs["admin_ips"] == ["203.0.113.211"]
 
     def test_dedupes_against_previously_normalized_entry(self, mock_file_ops):
         """Re-adding the same host as "x.x.x.x/32" must match the bare
@@ -161,9 +161,9 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
         from nssec.modules.waf import add_allowlisted_ip
 
         mock_file_ops["read"].return_value = (
-            'SecRule REMOTE_ADDR "@ipMatch 54.196.79.211" "id:1000101,phase:1,pass"\n'
+            'SecRule REMOTE_ADDR "@ipMatch 203.0.113.211" "id:1000101,phase:1,pass"\n'
         )
-        result = add_allowlisted_ip("54.196.79.211/32")
+        result = add_allowlisted_ip("203.0.113.211/32")
 
         assert result.skipped
         mock_file_ops["write"].assert_not_called()
@@ -226,12 +226,12 @@ SecRule REMOTE_ADDR "@ipMatch 192.168.1.100" "id:1000101,phase:1,pass"
         from nssec.modules.waf import remove_allowlisted_ip
 
         mock_file_ops["read"].return_value = (
-            'SecRule REMOTE_ADDR "@ipMatch 54.196.79.211" "id:1000101,phase:1,pass"\n'
+            'SecRule REMOTE_ADDR "@ipMatch 203.0.113.211" "id:1000101,phase:1,pass"\n'
         )
-        result = remove_allowlisted_ip("54.196.79.211/32")
+        result = remove_allowlisted_ip("203.0.113.211/32")
 
         assert result.success
-        assert "54.196.79.211" in result.message
+        assert "203.0.113.211" in result.message
         mock_file_ops["write"].assert_called_once()
 
 
@@ -1048,7 +1048,7 @@ class TestInstallExclusionsPreservesAllowlist:
     """
 
     DEPLOYED = (
-        'SecRule REMOTE_ADDR "@ipMatch 216.59.61.192/26" "id:1000101,phase:1,pass"\n'
+        'SecRule REMOTE_ADDR "@ipMatch 198.51.100.128/26" "id:1000101,phase:1,pass"\n'
         'SecRule REMOTE_ADDR "@ipMatch 203.0.113.7" "id:1000102,phase:1,pass"\n'
         'SecRule REMOTE_ADDR "@ipMatch 5.6.7.8" "id:1000201,phase:1,pass"\n'
     )
@@ -1061,7 +1061,7 @@ class TestInstallExclusionsPreservesAllowlist:
 
         assert result.success
         kwargs = mock_file_ops["render"].call_args.kwargs
-        assert kwargs["admin_ips"] == ["216.59.61.192/26", "203.0.113.7"]
+        assert kwargs["admin_ips"] == ["198.51.100.128/26", "203.0.113.7"]
         assert kwargs["nodeping_ips"] == ["9.9.9.9"]
 
     def test_allowlist_render_keeps_nodeping(self, mock_file_ops):

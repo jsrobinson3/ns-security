@@ -120,12 +120,12 @@ class TestParseIps:
         content = (
             "# Example, replace with your IP:\n"
             "# Require ip <ADMIN-IP>\n"
-            "Require ip 207.45.79.249\n"
+            "Require ip 192.0.2.249\n"
             "# Allow from <YOUR-IP>\n"
         )
         with patch("nssec.modules.waf.restrict.read_file", return_value=content):
             ips = parse_ips("/fake/.htaccess")
-        assert ips == ["207.45.79.249"]
+        assert ips == ["192.0.2.249"]
         assert "<ADMIN-IP>" not in ips
 
     def test_returns_empty_for_missing_file(self):
@@ -631,7 +631,7 @@ class TestInvalidIpFiltering:
         from nssec.modules.waf.restrict import is_valid_ip
 
         assert is_valid_ip("127.0.0.1")
-        assert is_valid_ip("74.219.23.50")
+        assert is_valid_ip("203.0.113.50")
         assert is_valid_ip("1.2.3.0/22")
         assert not is_valid_ip("<ADMIN-IP>")
         assert not is_valid_ip("not-an-ip")
@@ -643,7 +643,7 @@ class TestInvalidIpFiltering:
         captured = {}
         with patch(
             "nssec.modules.waf.restrict.collect_existing_ips",
-            return_value=["<ADMIN-IP>", "207.45.79.249"],
+            return_value=["<ADMIN-IP>", "192.0.2.249"],
         ), patch(
             "nssec.modules.waf.restrict.get_applicable_components",
             return_value=[{"name": "SiPbx", "segment": "SiPbx"}],
@@ -662,10 +662,10 @@ class TestInvalidIpFiltering:
 
         # The invalid token is not written to the config...
         assert "<ADMIN-IP>" not in captured["content"]
-        assert "Require ip 207.45.79.249" in captured["content"]
+        assert "Require ip 192.0.2.249" in captured["content"]
         # ...nor persisted to the cache (self-heals),
         assert "<ADMIN-IP>" not in captured["cached"]
-        assert captured["cached"] == ["127.0.0.1", "207.45.79.249"]
+        assert captured["cached"] == ["127.0.0.1", "192.0.2.249"]
         # ...and the skip is reported.
         assert "skipped 1 invalid" in results[0][1].message
         assert "<ADMIN-IP>" in results[0][1].message
@@ -688,11 +688,11 @@ class TestCollectExistingIpsFiltersInvalid:
         htaccess = (
             "    Allow from 127.0.0.1\n"
             "    Allow from <ADMIN-IP>\n"
-            "    Allow from 207.45.79.249\n"
+            "    Allow from 192.0.2.249\n"
         )
         with patch.object(r, "file_exists", side_effect=lambda p: p in r.LEGACY_HTACCESS_PATHS), \
              patch.object(r, "read_file", return_value=htaccess), \
              patch.object(r, "load_cached_ips", return_value=["<ADMIN-IP>", "9.9.9.9"]):
             ips = r.collect_existing_ips("combo")
         assert "<ADMIN-IP>" not in ips
-        assert ips == ["207.45.79.249", "9.9.9.9"]
+        assert ips == ["192.0.2.249", "9.9.9.9"]
