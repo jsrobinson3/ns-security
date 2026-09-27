@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "11"
+NS_EXCLUSIONS_VERSION = "12"
 
 # Optional features of the exclusions file, with their defaults.  The deployed
 # file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
@@ -533,6 +533,28 @@ SecRule REQUEST_URI "@beginsWith /ns-api/" \\
     SecRule ARGS_GET:object "@streq recording" \\
         "t:none,\\
          ctl:ruleRemoveTargetById=932270;ARGS:orig_callid"
+
+# ---- Inbound SMS webhook: message body false-positives the RCE rules ----
+# The SMS carrier delivers inbound texts as a JSON array POSTed to
+# /ns-api/?object=sms&action=create, with the message body in
+# array.array.message.text.  That body is free-form human prose, stored and
+# displayed but never handed to a shell, and the CRS Unix command-injection
+# rules (932235 and siblings) match ordinary words and punctuation in it -
+# each hit drops a real customer text.  Remove only the attack-rce tag, only
+# on the message-text argument, only for SMS creates; XSS/SQLi rules still
+# inspect the body and every other argument keeps full RCE coverage.
+SecRule REQUEST_URI "@beginsWith /ns-api/" \\
+    "id:1000018,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     chain"
+    SecRule ARGS_GET:object "@streq sms" \\
+        "t:none,\\
+         chain"
+        SecRule ARGS_GET:action "@streq create" \\
+            "t:none,\\
+             ctl:ruleRemoveTargetByTag=attack-rce;ARGS:array.array.message.text"
 
 {% if admin_ips %}
 # ---- Allowlisted admin IPs (reduced WAF strictness) ----
