@@ -385,12 +385,44 @@ SecRule REQUEST_URI "@beginsWith /frm/" \\
 
 # ---- Portal login password false positives ----
 # Passwords with shell metacharacters ($, ~, ^, |) trigger RCE rule 932270.
+# Passwords built from a keyboard-walk of the shifted number row (!@#, @#$,
+# ...) trigger libinjection SQLi rule 942100: @ is MySQL's user-variable
+# sigil and # is its comment marker, so a handful of ordinary punctuation
+# characters tokenize as a plausible SQL fragment. Neither rule is ever
+# checking real SQL/shell behavior here - this argument only ever reaches a
+# password hash comparison.
 SecRule REQUEST_URI "@beginsWith /portal/login/login" \\
     "id:1000008,\\
      phase:2,\\
      pass,\\
      nolog,\\
-     ctl:ruleRemoveTargetById=932270;ARGS:data[Login][password]"
+     ctl:ruleRemoveTargetById=932270;ARGS:data[Login][password],\\
+     ctl:ruleRemoveTargetById=942100;ARGS:data[Login][password]"
+
+# ---- Password-reset flow: same password false positives as login ----
+# /portal/resets/... carries the same candidate password through several
+# steps (set, confirm, validate) under several argument names. A user whose
+# password trips 942100 on login (see above) cannot escape it by resetting
+# to a new password either, since the new value goes through this same
+# libinjection check on write - full lockout, not just a failed login.
+# fieldValue is a generic name reused by other resets fields, so it is
+# scoped to the one endpoint where it is known to carry the password
+# (validateSecurePassword); the others are unambiguous by name.
+SecRule REQUEST_URI "@beginsWith /portal/resets/" \\
+    "id:1000019,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=942100;ARGS:data[reset][password],\\
+     ctl:ruleRemoveTargetById=942100;ARGS:data[reset][confirm_password],\\
+     ctl:ruleRemoveTargetById=942100;ARGS:resetPassword"
+
+SecRule REQUEST_URI "@beginsWith /portal/resets/validateSecurePassword" \\
+    "id:1000020,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=942100;ARGS:fieldValue"
 
 # ---- Portal paths with domain names in URL segments ----
 # NetSapiens portal URLs embed tenant domain names as path segments, e.g.:
@@ -533,6 +565,26 @@ SecRule REQUEST_URI "@beginsWith /ns-api/" \\
     SecRule ARGS_GET:object "@streq recording" \\
         "t:none,\\
          ctl:ruleRemoveTargetById=932270;ARGS:orig_callid"
+
+# ---- Recording API: calid false-positives the same RCE rule (play action) ----
+# action=play carries the same SIP Call-ID as action=read above, just under
+# a different argument name (calid instead of orig_callid) - same rule
+# (932270), same "~-" shell-expression false match, different code path.
+# Discovered 2026-09-28 after the read/orig_callid fix above shipped: this
+# one kept blocking because it is a different argument, not a regression of
+# that fix.
+SecRule REQUEST_URI "@beginsWith /ns-api/" \\
+    "id:1000021,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     chain"
+    SecRule ARGS_GET:object "@streq recording" \\
+        "t:none,\\
+         chain"
+        SecRule ARGS_GET:action "@streq play" \\
+            "t:none,\\
+             ctl:ruleRemoveTargetById=932270;ARGS:calid"
 
 # ---- Inbound SMS webhook: message body false-positives the RCE rules ----
 # The SMS carrier delivers inbound texts as a JSON array POSTed to
