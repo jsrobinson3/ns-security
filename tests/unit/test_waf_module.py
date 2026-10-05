@@ -810,6 +810,84 @@ class TestLegacyMobileFalsePositiveExclusions:
         assert len(ids) == len(set(ids)), f"duplicate exclusion IDs: {ids}"
 
 
+class TestPortalSaveAndUploadExclusions:
+    """Tests for the phone builder, MOH upload and voicemail exclusions."""
+
+    def _render(self):
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
+
+        return render_exclusions(
+            admin_ips=[],
+            nodeping_ips=[],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
+        )
+
+    def _block(self, rendered, rule_id):
+        """Return the directive body for a single exclusion rule."""
+        return rendered.split(f"id:{rule_id}")[1].split("SecRule")[0]
+
+    def _preamble(self, rendered, rule_id):
+        """Return the SecRule condition that gates a single exclusion rule."""
+        return rendered.split(f"id:{rule_id}")[0].rsplit("SecRule", 1)[1]
+
+    def test_phone_builder_scoped_to_config_fields(self):
+        """942190/942550/932230 dropped only for devices and provData."""
+        rendered = self._render()
+        block = self._block(rendered, "1000019")
+        for rule in ("942190", "942550", "932230"):
+            for arg in ("devices", "provData"):
+                assert f"ctl:ruleRemoveTargetById={rule};ARGS:{arg}" in block
+        assert "@beginsWith /portal/builder/saveConfig/" in self._preamble(rendered, "1000019")
+
+    def test_phone_builder_does_not_remove_whole_rules(self):
+        """The three rules must stay active for every other argument."""
+        block = self._block(self._render(), "1000019")
+        assert "ruleRemoveById" not in block
+        assert "ruleRemoveByTag" not in block
+
+    def test_moh_upload_removes_only_unmatched_boundary(self):
+        """Only 200004 is removed for MOH uploads; strict validation stays."""
+        rendered = self._render()
+        block = self._block(rendered, "1000020")
+        assert "ctl:ruleRemoveById=200004" in block
+        assert "200003" not in block
+        assert "ruleRemoveByTag" not in block
+        assert "@beginsWith /portal/music/add/" in self._preamble(rendered, "1000020")
+
+    def test_voicemail_scoped_to_greeting_list(self):
+        """932370 dropped only for the serialized greeting list field."""
+        rendered = self._render()
+        block = self._block(rendered, "1000021")
+        assert "ctl:ruleRemoveTargetById=932370;ARGS:data[User][vmail_greeting_files]" in block
+        assert "ruleRemoveById" not in block
+        assert "ruleRemoveByTag" not in block
+        assert "@beginsWith /portal/users/edit/voicemail/" in self._preamble(rendered, "1000021")
+
+    def test_exclusions_run_in_phase_1(self):
+        """200004 and the CRS rules all run in phase 2, so the ctl must be phase 1."""
+        rendered = self._render()
+        for rule_id in ("1000019", "1000020", "1000021"):
+            assert "phase:1" in self._block(rendered, rule_id)
+
+    def test_comments_do_not_spill_into_directives(self):
+        """A comment line may only be followed by a comment or a new directive.
+
+        The template is a plain (non-raw) string, so an escape sequence such as
+        a backslash-r-n in a comment renders as a real line break and leaves a
+        bare text line that Apache refuses to load.
+        """
+        lines = self._render().splitlines()
+        stray = [
+            nxt
+            for line, nxt in zip(lines, lines[1:])
+            if line.lstrip().startswith("#")
+            and nxt.strip()
+            and not nxt.lstrip().startswith(("#", "Sec"))
+        ]
+        assert not stray, f"stray lines after comments: {stray}"
+
+
 class TestInstallCrsV4UpdatesSetup:
     """Tests for install_crs_v4 updating crs-setup.conf when v4 already present."""
 
