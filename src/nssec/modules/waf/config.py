@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "12"
+NS_EXCLUSIONS_VERSION = "13"
 
 # Optional features of the exclusions file, with their defaults.  The deployed
 # file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
@@ -555,6 +555,71 @@ SecRule REQUEST_URI "@beginsWith /ns-api/" \\
         SecRule ARGS_GET:action "@streq create" \\
             "t:none,\\
              ctl:ruleRemoveTargetByTag=attack-rce;ARGS:array.array.message.text"
+
+# ---- Phone builder save (sidecar / line key configuration) ----
+# "Save and Resync" in the portal phone builder posts the device's entire
+# configuration as JSON in two form fields, e.g.:
+#   POST /portal/builder/saveConfig/
+#     devices=[{"template":[],"configuration":{"pc_name":"...","brand":"Yealink",...
+#     provData={"mac":"...","model":"Yealink SIP-T54W","transport":"UDP",...
+# Free-text key labels and the JSON quoting around them read as injection to
+# the CRS regexes: 942190 (MSSQL) matches a label containing "User (" and the
+# quote-bang sequence "!, and 932230 (Unix RCE) matches "=UDP" in transport
+# settings.  Each is CRITICAL, so any one scores 5 and the save 403s, leaving
+# the UI spinning.  942550 (JSON-in-SQL) does not match but exhausts the PCRE
+# limit on every save of a large config, logging an execution error each time.
+#
+# Drop just those three rules from just those two fields on just this path.
+# Every other SQLi and RCE rule still inspects devices and provData, and the
+# three rules still inspect every other argument and every other path.
+SecRule REQUEST_URI "@beginsWith /portal/builder/saveConfig/" \\
+    "id:1000019,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=942190;ARGS:devices,\\
+     ctl:ruleRemoveTargetById=942190;ARGS:provData,\\
+     ctl:ruleRemoveTargetById=942550;ARGS:devices,\\
+     ctl:ruleRemoveTargetById=942550;ARGS:provData,\\
+     ctl:ruleRemoveTargetById=932230;ARGS:devices,\\
+     ctl:ruleRemoveTargetById=932230;ARGS:provData"
+
+# ---- Music on hold uploads (binary audio in multipart) ----
+# MOH files are uploaded as multipart/form-data:
+#   POST /portal/music/add/domain@example/1
+# Rule 200004 (modsecurity.conf) denies any body where the multipart parser
+# reports a *possible* unmatched boundary.  The parser raises that flag
+# whenever a line inside a part begins with "--" but is not the boundary, and
+# raw PCM/WAV sample data contains such byte runs routinely, so the same
+# audio file 403s on every attempt, from any client, on every core.
+#
+# Remove only 200004, only for MOH uploads.  200003 (strict multipart
+# validation) still rejects malformed bodies here, and CRS still inspects the
+# form fields and uploaded file names.
+SecRule REQUEST_URI "@beginsWith /portal/music/add/" \\
+    "id:1000020,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveById=200004"
+
+# ---- Voicemail greeting list round-trip ----
+# The voicemail settings form posts back the user's existing greetings as a
+# PHP-serialized list that includes each greeting's transcript text, e.g.:
+#   data[User][vmail_greeting_files]=a:8:{...s:322:"8 - Hello you have reached
+#     ... call me at 555-0100.<CR><LF>Have a great Holiday.";s:212:"https://...
+# Rule 932370 (Windows command injection) matches a line break followed by a
+# Windows command name, and "at" -- the scheduler command -- starts countless
+# sentences.  At CRITICAL it scores 5 alone, so any user whose transcript has a
+# new line beginning "at ..." can no longer save voicemail settings or greetings.
+#
+# Drop only that field from 932370, only on the voicemail edit page.
+SecRule REQUEST_URI "@beginsWith /portal/users/edit/voicemail/" \\
+    "id:1000021,\\
+     phase:1,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=932370;ARGS:data[User][vmail_greeting_files]"
 
 {% if admin_ips %}
 # ---- Allowlisted admin IPs (reduced WAF strictness) ----
