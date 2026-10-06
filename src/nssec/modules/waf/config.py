@@ -409,7 +409,7 @@ SecRule REQUEST_URI "@beginsWith /portal/login/login" \\
 # scoped to the one endpoint where it is known to carry the password
 # (validateSecurePassword); the others are unambiguous by name.
 SecRule REQUEST_URI "@beginsWith /portal/resets/" \\
-    "id:1000019,\\
+    "id:1000022,\\
      phase:2,\\
      pass,\\
      nolog,\\
@@ -418,7 +418,7 @@ SecRule REQUEST_URI "@beginsWith /portal/resets/" \\
      ctl:ruleRemoveTargetById=942100;ARGS:resetPassword"
 
 SecRule REQUEST_URI "@beginsWith /portal/resets/validateSecurePassword" \\
-    "id:1000020,\\
+    "id:1000023,\\
      phase:2,\\
      pass,\\
      nolog,\\
@@ -574,7 +574,7 @@ SecRule REQUEST_URI "@beginsWith /ns-api/" \\
 # one kept blocking because it is a different argument, not a regression of
 # that fix.
 SecRule REQUEST_URI "@beginsWith /ns-api/" \\
-    "id:1000021,\\
+    "id:1000024,\\
      phase:2,\\
      pass,\\
      nolog,\\

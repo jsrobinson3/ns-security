@@ -284,3 +284,60 @@ class TestBackupFile:
 
         result = backup_file(str(tmp_path / "does-not-exist.conf"))
         assert result is None
+
+
+class TestSecurity2CrsWired:
+    """security2_crs_wired and appending next to an existing include."""
+
+    CRS = "/opt/crs"
+
+    def test_active_include_is_wired(self):
+        from nssec.modules.waf.utils import security2_crs_wired
+
+        content = f"<IfModule x>\n    IncludeOptional {self.CRS}/rules/*.conf\n</IfModule>\n"
+        assert security2_crs_wired(content, self.CRS) is True
+
+    def test_commented_include_is_not_wired(self):
+        from nssec.modules.waf.utils import security2_crs_wired
+
+        content = f"    # IncludeOptional {self.CRS}/rules/*.conf\n"
+        assert security2_crs_wired(content, self.CRS) is False
+
+    def test_missing_path_is_not_wired(self):
+        from nssec.modules.waf.utils import security2_crs_wired
+
+        assert security2_crs_wired("IncludeOptional /etc/modsecurity/*.conf\n", self.CRS) is False
+
+    def test_other_active_apt_crs_load_is_not_wired(self):
+        from nssec.modules.waf.utils import security2_crs_wired
+
+        content = (
+            f"IncludeOptional {self.CRS}/rules/*.conf\n"
+            "IncludeOptional /usr/share/modsecurity-crs/*.load\n"
+        )
+        assert security2_crs_wired(content, self.CRS) is False
+
+    def test_commented_apt_crs_load_is_ignored(self):
+        from nssec.modules.waf.utils import security2_crs_wired
+
+        content = (
+            f"IncludeOptional {self.CRS}/rules/*.conf\n"
+            "# IncludeOptional /usr/share/modsecurity-crs/*.load\n"
+        )
+        assert security2_crs_wired(content, self.CRS) is True
+
+    def test_append_does_not_duplicate_existing_include(self):
+        from nssec.modules.waf import utils
+
+        existing = (
+            "<IfModule security2_module>\n"
+            f"    IncludeOptional {self.CRS}/rules/*.conf\n"
+            "</IfModule>\n"
+        )
+        with patch.object(utils, "read_file", return_value=existing), patch.object(
+            utils, "backup_file"
+        ), patch.object(utils, "write_file", return_value=True) as write:
+            assert utils.append_crs_to_security2(self.CRS) is True
+        written = write.call_args[0][1]
+        assert written.count(f"{self.CRS}/rules/*.conf") == 1
+        assert "added by nssec" not in written

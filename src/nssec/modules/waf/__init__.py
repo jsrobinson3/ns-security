@@ -68,6 +68,8 @@ from nssec.modules.waf.utils import (
     render,
     restore_snapshot,
     run_cmd,
+    security2_crs_wired,
+    snapshot_files,
     version_gte,
     write_file,
     write_security2_full,
@@ -660,7 +662,7 @@ class ModSecurityInstaller:
 
     def _handle_wildcard_security2(self, crs_path: str) -> StepResult:
         sec2_content = read_file(SECURITY2_CONF) or ""
-        if crs_path in sec2_content:
+        if security2_crs_wired(sec2_content, crs_path):
             msg = f"security2.conf already includes CRS from {crs_path}"
             return StepResult(skipped=True, message=msg)
         if self.dry_run:
@@ -767,6 +769,8 @@ class ModSecurityInstaller:
         if pf.apache_installed and not pf.apache_running:
             result.warnings.append("Apache2 is installed but not running")
 
+        snapshot = snapshot_files([MODSEC_CONF, SECURITY2_CONF, NS_EXCLUSIONS_CONF, EVASIVE_CONF])
+
         steps = [
             ("Install packages", self.install_packages),
             ("Enable Apache modules", self.enable_modules),
@@ -782,7 +786,7 @@ class ModSecurityInstaller:
                 lambda: self.install_exclusions(admin_ips, nodeping_ips, toggles, cluster),
             ),
             ("Update security2.conf", self.write_security2_conf),
-            ("Validate Apache config", self.validate_config),
+            ("Validate Apache config", lambda: self.validate_config(snapshot=snapshot)),
         ]
 
         for name, step_fn in steps:

@@ -197,6 +197,31 @@ def parse_security2_conf(path: str) -> tuple[bool, bool]:
     return has_wildcard, has_crs_load
 
 
+def _active_lines(content: str) -> list[str]:
+    """Non-blank, non-comment lines of a config file, stripped."""
+    return [s for s in (line.strip() for line in content.splitlines()) if s and s[0] != "#"]
+
+
+def _includes_crs(line: str, crs_path: str) -> bool:
+    return "IncludeOptional" in line and crs_path in line
+
+
+def _is_other_crs_load(line: str, crs_path: str) -> bool:
+    return "IncludeOptional" in line and "modsecurity-crs" in line and crs_path not in line
+
+
+def security2_crs_wired(content: str, crs_path: str) -> bool:
+    """True when security2.conf actively loads ``crs_path`` and no other apt CRS.
+
+    Commented-out lines do not count, so a CRS path that only appears in a
+    "Disabled by nssec" comment is correctly treated as not wired.
+    """
+    active = _active_lines(content)
+    return any(_includes_crs(s, crs_path) for s in active) and not any(
+        _is_other_crs_load(s, crs_path) for s in active
+    )
+
+
 def append_crs_to_security2(crs_path: str) -> bool:
     """Append CRS IncludeOptional directives to an existing security2.conf.
 
@@ -223,6 +248,9 @@ def append_crs_to_security2(crs_path: str) -> bool:
         else:
             new_lines.append(line)
     sec2_content = "\n".join(new_lines)
+
+    if any(_includes_crs(s, crs_path) for s in _active_lines(sec2_content)):
+        return write_file(SECURITY2_CONF, sec2_content)
 
     crs_block = (
         f"\n    # OWASP CRS (added by nssec)\n"
