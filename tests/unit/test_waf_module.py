@@ -922,6 +922,13 @@ class TestPhpUploadProgressRules:
         for rule_id in ("1000025", "1000026"):
             assert "ctl:ruleEngine=On" in self._block(rendered, rule_id)
 
+    def test_engine_forced_only_on_last_chain_link(self):
+        """On a chain starter the ctl runs on every multipart request."""
+        block = self._block(self._render(), "1000026")
+        starter, last = block.rsplit("SecRule REQBODY_PROCESSOR", 1)
+        assert "ctl:ruleEngine" not in starter
+        assert "ctl:ruleEngine=On" in last
+
     def test_not_exempted_by_allowlists(self):
         """The allowlists remove by tag, so these must carry neither tag."""
         rendered = self._render(admin_ips=["192.0.2.10"], nodeping_ips=["198.51.100.5"])

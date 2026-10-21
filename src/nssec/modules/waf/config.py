@@ -294,6 +294,9 @@ NS_EXCLUSIONS_TEMPLATE = """\
 #          the raw name; matching case-insensitively only over-blocks).
 # 1000026: a multipart body ModSecurity did not parse as multipart, which
 #          would hide its field names from 1000025 while PHP still parses it.
+#          Its ctl:ruleEngine=On sits on the last chain link: non-disruptive
+#          actions run when their own link matches, so on the starter it
+#          would enforce CRS on every multipart request under DetectionOnly.
 SecRule ARGS_NAMES|FILES_NAMES "@rx (?i)php_session_upload_progress" \\
     "id:1000025,\\
      phase:2,\\
@@ -315,14 +318,13 @@ SecRule REQUEST_HEADERS:Content-Type "@rx (?i)multipart/form-data" \\
      deny,\\
      status:403,\\
      log,\\
-     ctl:ruleEngine=On,\\
      msg:'nssec: multipart body not inspected by the WAF',\\
      logdata:'processor=%{REQBODY_PROCESSOR}',\\
      tag:'nssec',\\
      tag:'nssec-php-upload-progress',\\
      severity:'CRITICAL',\\
      chain"
-    SecRule REQBODY_PROCESSOR "!@streq MULTIPART" "t:none"
+    SecRule REQBODY_PROCESSOR "!@streq MULTIPART" "t:none,ctl:ruleEngine=On"
 
 # ---- Redact credential-bearing arguments from the audit log ----
 # ModSecurity writes matched requests to the audit log verbatim, including
