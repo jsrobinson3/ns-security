@@ -27,6 +27,12 @@ def _render(admin_ips=(), nodeping_ips=(), **toggles):
     )
 
 
+def _abuse_section(rendered):
+    """Return the rendered abuse-protection rules (the PHP mitigation above
+    them forces the engine on by design)."""
+    return rendered.split("# Abuse protection", 1)[1]
+
+
 def _block(rendered, rule_id):
     """Return the rule with id:<rule_id>, chained links included."""
     start = rendered.rindex("SecRule ", 0, rendered.index(f'"id:{rule_id},'))
@@ -183,7 +189,7 @@ class TestDeviceWalk:
 
     def test_follows_engine_mode(self):
         """Rules must not force the engine on — DetectionOnly only logs."""
-        assert "ctl:ruleEngine" not in _render()
+        assert "ctl:ruleEngine" not in _abuse_section(_render())
 
     def test_toggle_off_removes_rules(self):
         rendered = _render(device_walk=False)
@@ -323,7 +329,7 @@ class TestDeviceReadAllowlistOnly:
         assert "initcol:user=" not in rendered
 
     def test_follows_engine_mode(self):
-        assert "ctl:ruleEngine" not in _render(device_read_allowlist_only=True)
+        assert "ctl:ruleEngine" not in _abuse_section(_render(device_read_allowlist_only=True))
 
     def test_cli_flag(self, mock_installer):
         with patch("nssec.modules.waf.fetch_nodeping_probe_ips", return_value=([], "")):

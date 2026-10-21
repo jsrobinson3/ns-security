@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "13"
+NS_EXCLUSIONS_VERSION = "14"
 
 # Optional features of the exclusions file, with their defaults.  The deployed
 # file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
@@ -277,6 +277,53 @@ NS_EXCLUSIONS_TEMPLATE = """\
 # exception is the sanitiseArg rule (1000015): it is a logging-time action, not
 # a rule suppression, so its load order relative to the CRS rules is immaterial.
 
+# ---- PHP session upload-progress RCE (php2shell) ----
+# PHP's multipart parser runs its session upload-progress handler as soon as
+# a form field named after session.upload_progress.name (default
+# PHP_SESSION_UPLOAD_PROGRESS) appears, before any application code runs, and
+# that handler is exploitable for remote code execution on unpatched builds.
+# ModSecurity's phase 2 completes before Apache hands the request to PHP, so
+# denying here keeps the body from ever reaching the vulnerable parser.
+# NetSapiens never uses upload progress, so no legitimate request carries it.
+#
+# These deny regardless of the WAF engine mode (ctl:ruleEngine=On), and carry
+# neither OWASP_CRS nor nssec-abuse, so the localhost and IP allowlists do
+# not exempt them.
+#
+# 1000025: the field itself, as a form field or a file part (PHP compares
+#          the raw name; matching case-insensitively only over-blocks).
+# 1000026: a multipart body ModSecurity did not parse as multipart, which
+#          would hide its field names from 1000025 while PHP still parses it.
+SecRule ARGS_NAMES|FILES_NAMES "@rx (?i)php_session_upload_progress" \\
+    "id:1000025,\\
+     phase:2,\\
+     t:none,\\
+     deny,\\
+     status:403,\\
+     log,\\
+     ctl:ruleEngine=On,\\
+     msg:'nssec: PHP session upload-progress field blocked',\\
+     logdata:'%{MATCHED_VAR_NAME}',\\
+     tag:'nssec',\\
+     tag:'nssec-php-upload-progress',\\
+     severity:'CRITICAL'"
+
+SecRule REQUEST_HEADERS:Content-Type "@rx (?i)multipart/form-data" \\
+    "id:1000026,\\
+     phase:2,\\
+     t:none,\\
+     deny,\\
+     status:403,\\
+     log,\\
+     ctl:ruleEngine=On,\\
+     msg:'nssec: multipart body not inspected by the WAF',\\
+     logdata:'processor=%{REQBODY_PROCESSOR}',\\
+     tag:'nssec',\\
+     tag:'nssec-php-upload-progress',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule REQBODY_PROCESSOR "!@streq MULTIPART" "t:none"
+
 # ---- Redact credential-bearing arguments from the audit log ----
 # ModSecurity writes matched requests to the audit log verbatim, including
 # query-string and body arguments. OAuth2 password-grant and portal-token
@@ -409,7 +456,7 @@ SecRule REQUEST_URI "@beginsWith /portal/login/login" \\
 # scoped to the one endpoint where it is known to carry the password
 # (validateSecurePassword); the others are unambiguous by name.
 SecRule REQUEST_URI "@beginsWith /portal/resets/" \\
-    "id:1000019,\\
+    "id:1000022,\\
      phase:2,\\
      pass,\\
      nolog,\\
@@ -418,7 +465,7 @@ SecRule REQUEST_URI "@beginsWith /portal/resets/" \\
      ctl:ruleRemoveTargetById=942100;ARGS:resetPassword"
 
 SecRule REQUEST_URI "@beginsWith /portal/resets/validateSecurePassword" \\
-    "id:1000020,\\
+    "id:1000023,\\
      phase:2,\\
      pass,\\
      nolog,\\
@@ -574,7 +621,7 @@ SecRule REQUEST_URI "@beginsWith /ns-api/" \\
 # one kept blocking because it is a different argument, not a regression of
 # that fix.
 SecRule REQUEST_URI "@beginsWith /ns-api/" \\
-    "id:1000021,\\
+    "id:1000024,\\
      phase:2,\\
      pass,\\
      nolog,\\
