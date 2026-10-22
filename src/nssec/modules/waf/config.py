@@ -72,7 +72,7 @@ CRS_SEARCH_PATHS = [
 BACKUP_SUFFIX = ".bak.nssec"
 
 # Exclusions template version — human-readable label for the template revision.
-NS_EXCLUSIONS_VERSION = "14"
+NS_EXCLUSIONS_VERSION = "15"
 
 # Optional features of the exclusions file, with their defaults.  The deployed
 # file records each one as a "# nssec-toggle: <name>=on|off" header line, so a
@@ -721,6 +721,50 @@ SecRule REQUEST_URI "@beginsWith /portal/users/edit/voicemail/" \\
      pass,\\
      nolog,\\
      ctl:ruleRemoveTargetById=932370;ARGS:data[User][vmail_greeting_files]"
+
+# ---- Phone number edit: time-of-day routing destinations ----
+# /portal/inventory/edit/phonenumber/... posts each TOD slot's routing
+# destinations as data[Phonenumber][tod][<timeframe>][<type>], where type is
+# attendant, callqueue, pstn, user or voicemail. The portal fills these with
+# "<name> (<extension>)" display strings, and when the name ends in a SQL
+# function name -- "MCA Day (8030)", "Kim Char (204)" -- libinjection rule
+# 942100 reads it as a function call, so saving TOD routing on that number is
+# blocked outright.
+#
+# <timeframe> is * for the fallback slot or the name of a timeframe defined on
+# the customer's domain ("Office Hours", "MCA Closed", ...), so the arguments
+# cannot be listed by name. ModSecurity v2 compares ctl:ruleRemoveTarget*
+# targets as plain strings -- a regex target there silently matches nothing --
+# so instead:
+#   1000027 drops every ARGS target from 942100 on this path, and
+#   1000028 re-runs the same libinjection check (same transforms, scoring and
+#           tags as CRS 4.8.0's 942100) on every argument except the TOD ones.
+# 942100 itself still inspects cookies, headers and ARGS_NAMES here, and
+# every other SQLi rule still inspects the TOD arguments.
+SecRule REQUEST_URI "@beginsWith /portal/inventory/edit/phonenumber/" \\
+    "id:1000027,\\
+     phase:2,\\
+     pass,\\
+     nolog,\\
+     ctl:ruleRemoveTargetById=942100;ARGS"
+
+SecRule REQUEST_URI "@beginsWith /portal/inventory/edit/phonenumber/" \\
+    "id:1000028,\\
+     phase:2,\\
+     block,\\
+     msg:'SQL Injection Attack Detected via libinjection',\\
+     logdata:'Matched Data: %{TX.0} found within %{MATCHED_VAR_NAME}: %{MATCHED_VAR}',\\
+     tag:'attack-sqli',\\
+     tag:'paranoia-level/1',\\
+     tag:'OWASP_CRS',\\
+     severity:'CRITICAL',\\
+     chain"
+    SecRule ARGS|!ARGS:/^data\\[Phonenumber\\]\\[tod\\]\\[/ "@detectSQLi" \\
+        "capture,\\
+         t:none,t:utf8toUnicode,t:urlDecodeUni,t:removeNulls,\\
+         multiMatch,\\
+         setvar:'tx.inbound_anomaly_score_pl1=+%{tx.critical_anomaly_score}',\\
+         setvar:'tx.sql_injection_score=+%{tx.critical_anomaly_score}'"
 
 {% if admin_ips %}
 # ---- Allowlisted admin IPs (reduced WAF strictness) ----
