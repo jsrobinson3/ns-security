@@ -1,5 +1,6 @@
 """Tests for WAF module functions."""
 
+import re
 from unittest.mock import MagicMock, patch
 
 from jinja2 import Template
@@ -886,6 +887,63 @@ class TestPortalSaveAndUploadExclusions:
             and not nxt.lstrip().startswith(("#", "Sec"))
         ]
         assert not stray, f"stray lines after comments: {stray}"
+
+
+class TestPhonenumberTodExclusion:
+    """Tests for the phone number TOD routing 942100 exclusion pair."""
+
+    PATH = "@beginsWith /portal/inventory/edit/phonenumber/"
+
+    def _render(self):
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
+
+        return render_exclusions(
+            admin_ips=[],
+            nodeping_ips=[],
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
+        )
+
+    def _rule(self, rendered, rule_id):
+        """Return a rule's condition, actions and any chained links."""
+        before, after = rendered.split(f"id:{rule_id},")
+        return before.rsplit("SecRule", 1)[1] + after.split("\n\n")[0]
+
+    def test_removal_drops_only_args_from_942100_on_this_path(self):
+        rule = self._rule(self._render(), "1000027")
+        assert self.PATH in rule
+        assert "phase:2" in rule
+        assert 'ctl:ruleRemoveTargetById=942100;ARGS"' in rule
+        assert "ruleRemoveById" not in rule
+        assert "ruleRemoveByTag" not in rule
+
+    def test_replacement_rechecks_every_arg_except_tod(self):
+        rule = self._rule(self._render(), "1000028")
+        assert self.PATH in rule
+        assert "phase:2" in rule
+        assert 'SecRule ARGS|!ARGS:/^data\\[Phonenumber\\]\\[tod\\]\\[/ "@detectSQLi"' in rule
+
+    def test_replacement_scores_like_942100(self):
+        """Anomaly scoring, not a direct deny, with 942100's transforms."""
+        rule = self._rule(self._render(), "1000028")
+        assert "block," in rule
+        assert "deny" not in rule
+        assert "t:none,t:utf8toUnicode,t:urlDecodeUni,t:removeNulls" in rule
+        assert "setvar:'tx.inbound_anomaly_score_pl1=+%{tx.critical_anomaly_score}'" in rule
+        assert "setvar:'tx.sql_injection_score=+%{tx.critical_anomaly_score}'" in rule
+
+    def test_replacement_is_exempted_like_crs_rules(self):
+        """The allowlists remove OWASP_CRS by tag; the replacement must carry it."""
+        rule = self._rule(self._render(), "1000028")
+        assert "tag:'OWASP_CRS'" in rule
+        assert "tag:'attack-sqli'" in rule
+
+    def test_no_regex_targets_in_ctl_directives(self):
+        """ModSecurity v2 matches ctl:ruleRemoveTarget* targets as plain strings.
+
+        A regex target loads without error and silently excludes nothing.
+        """
+        assert not re.search(r"ctl:ruleRemoveTarget\w+=[^;\s]+;\w+:/", self._render())
 
 
 class TestPhpUploadProgressRules:
