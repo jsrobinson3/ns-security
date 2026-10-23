@@ -888,6 +888,64 @@ class TestPortalSaveAndUploadExclusions:
         assert not stray, f"stray lines after comments: {stray}"
 
 
+class TestPhpUploadProgressRules:
+    """Tests for the PHP session upload-progress mitigation."""
+
+    def _render(self, **kwargs):
+        from nssec.modules.waf import render_exclusions
+        from nssec.modules.waf.config import EXCLUSION_TOGGLE_DEFAULTS
+
+        return render_exclusions(
+            admin_ips=kwargs.get("admin_ips", []),
+            nodeping_ips=kwargs.get("nodeping_ips", []),
+            toggles=EXCLUSION_TOGGLE_DEFAULTS,
+        )
+
+    def _block(self, rendered, rule_id):
+        """Return the rule with id:<rule_id>, chained links included."""
+        return rendered.split(f"id:{rule_id},")[1].split("\nSecRule ")[0]
+
+    def test_blocks_field_name_in_args_and_files(self):
+        block = self._block(self._render(), "1000025")
+        preamble = self._render().split('"id:1000025,')[0].rsplit("SecRule", 1)[1]
+        assert "ARGS_NAMES|FILES_NAMES" in preamble
+        assert "php_session_upload_progress" in preamble
+        assert "deny" in block
+
+    def test_blocks_multipart_the_waf_did_not_parse(self):
+        block = self._block(self._render(), "1000026")
+        assert 'REQBODY_PROCESSOR "!@streq MULTIPART"' in block
+        assert "deny" in block
+
+    def test_enforced_regardless_of_engine_mode(self):
+        rendered = self._render()
+        for rule_id in ("1000025", "1000026"):
+            assert "ctl:ruleEngine=On" in self._block(rendered, rule_id)
+
+    def test_engine_forced_only_on_last_chain_link(self):
+        """On a chain starter the ctl runs on every multipart request."""
+        block = self._block(self._render(), "1000026")
+        starter, last = block.rsplit("SecRule REQBODY_PROCESSOR", 1)
+        assert "ctl:ruleEngine" not in starter
+        assert "ctl:ruleEngine=On" in last
+
+    def test_not_exempted_by_allowlists(self):
+        """The allowlists remove by tag, so these must carry neither tag."""
+        rendered = self._render(admin_ips=["192.0.2.10"], nodeping_ips=["198.51.100.5"])
+        for rule_id in ("1000025", "1000026"):
+            block = self._block(rendered, rule_id)
+            assert "OWASP_CRS" not in block
+            assert "nssec-abuse" not in block
+
+    def test_rule_ids_are_unique(self):
+        """ModSecurity refuses to load a config with a duplicated rule id."""
+        import re
+
+        rendered = self._render(admin_ips=["192.0.2.10"], nodeping_ips=["198.51.100.5"])
+        ids = re.findall(r'"id:(\d+),', rendered)
+        assert len(ids) == len(set(ids)), sorted(i for i in set(ids) if ids.count(i) > 1)
+
+
 class TestInstallCrsV4UpdatesSetup:
     """Tests for install_crs_v4 updating crs-setup.conf when v4 already present."""
 
